@@ -1,0 +1,330 @@
+from __future__ import annotations
+
+from pathlib import Path
+import sqlite3
+import tempfile
+import unittest
+
+from breathing_memory.compression import StubCompressionBackend
+from breathing_memory.config import MemoryConfig
+from breathing_memory.engine import BreathingMemoryEngine
+from breathing_memory.store import SQLiteStore
+
+
+def make_engine(
+    root: Path,
+    total_capacity: int = 160,
+    retrieval_mode: str = "auto",
+) -> BreathingMemoryEngine:
+    config = MemoryConfig(
+        db_path=root / "memory.sqlite3",
+        total_capacity_mb=total_capacity / (1024 * 1024),
+        retrieval_mode=retrieval_mode,
+    )
+    return BreathingMemoryEngine(config=config, compression_backend=StubCompressionBackend())
+
+
+class EngineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        self.engine = make_engine(self.root)
+
+    def tearDown(self) -> None:
+        self.engine.close()
+        self.tempdir.cleanup()
+
+    def test_remember_creates_anchor_fragment_relations_and_metrics(self) -> None:
+        fragment = self.engine.remember(content="alpha memory", actor="user")
+
+        anchors = self.engine.store.list_anchors()
+        fragments = self.engine.store.list_fragments()
+        references = self.engine.store.list_references()
+        feedback = self.engine.store.list_feedback()
+        metrics = self.engine.store.list_sequence_metrics()
+
+        self.assertEqual(len(anchors), 1)
+        self.assertEqual(len(fragments), 1)
+        self.assertEqual(fragment["anchor_id"], anchors[0].id)
+        self.assertIsNone(fragment["reply_to"])
+        self.assertEqual(references[0].from_anchor_id, anchors[0].id)
+        self.assertEqual(references[0].fragment_id, fragment["id"])
+        self.assertEqual(feedback[0].verdict, "positive")
+        self.assertEqual(metrics[0].anchor_id, anchors[0].id)
+        self.assertEqual(metrics[0].compress_count, 0)
+        self.assertEqual(metrics[0].delete_count, 0)
+
+    def test_remember_rejects_unknown_reply_to_anchor(self) -> None:
+        with self.assertRaisesRegex(ValueError, "reply_to anchor not found"):
+            self.engine.remember(content="bad reply", actor="agent", reply_to=9999)
+
+    def test_feedback_uses_verdicts_and_updates_confidence(self) -> None:
+        fragment = self.engine.remember(content="beta memory", actor="user")
+
+        self.engine.feedback(
+            from_anchor_id=fragment["anchor_id"],
+            fragment_id=fragment["id"],
+            verdict="negative",
+        )
+
+        self.assertEqual(self.engine._confidence_score(fragment["id"]), 0.5)
+
+    def test_legacy_database_is_reset_and_backed_up(self) -> None:
+        db_path = self.root / "legacy.sqlite3"
+        connection = sqlite3.connect(str(db_path))
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE memory_fragments (
+                    id TEXT PRIMARY KEY,
+                    node_id TEXT NOT NULL,
+                    reply_to TEXT NULL,
+                    content TEXT NOT NULL,
+                    content_length INTEGER NOT NULL,
+                    created_turn INTEGER NOT NULL,
+                    layer TEXT NOT NULL,
+                    initial_confidence REAL NOT NULL,
+                    compression_fail_count INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE reference_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fragment_id TEXT NOT NULL,
+                    turn_index INTEGER NOT NULL,
+                    actor TEXT NOT NULL,
+                    weight REAL NOT NULL,
+                    source_fragment_ids_json TEXT NULL
+                );
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        store = SQLiteStore(db_path)
+        try:
+            self.assertEqual(store.list_fragments(), [])
+            backups = list(self.root.glob("legacy.legacy-*.sqlite3"))
+            self.assertEqual(len(backups), 1)
+        finally:
+            store.close()
+
+    def test_search_does_not_record_references(self) -> None:
+        fragment = self.engine.remember(content="search me", actor="user")
+        before = len(self.engine.store.list_references())
+
+        result = self.engine.search("search", result_count=8, search_effort=32)
+
+        self.assertEqual(result["items"][0]["id"], fragment["id"])
+        self.assertEqual(len(self.engine.store.list_references()), before)
+
+    def test_search_validates_result_count_and_search_effort(self) -> None:
+        self.engine.remember(content="search me", actor="user")
+
+        with self.assertRaisesRegex(ValueError, "result_count must be 8 \\* 2\\^n"):
+            self.engine.search("search", result_count=12)
+        with self.assertRaisesRegex(ValueError, "search_effort must be 32 \\* 2\\^n"):
+            self.engine.search("search", search_effort=48)
+
+    def test_search_rejects_unimplemented_semantic_modes(self) -> None:
+        self.engine.close()
+        self.engine = make_engine(self.root / "lite", retrieval_mode="lite")
+        self.engine.remember(content="search me", actor="user")
+
+        with self.assertRaisesRegex(RuntimeError, "text-only slice"):
+            self.engine.search("search")
+
+    def test_search_normalizes_symbols_and_whitespace(self) -> None:
+        fragment = self.engine.remember(content="`public/` 側には\nまだ残っています。", actor="user")
+
+        result = self.engine.search("public 側にはまだ残っています", result_count=8, search_effort=32)
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["items"][0]["id"], fragment["id"])
+
+    def test_search_matches_query_terms_without_exact_contiguous_substring(self) -> None:
+        fragment = self.engine.remember(content="memory\nsearch ready", actor="user")
+
+        result = self.engine.search("search memory", result_count=8, search_effort=32)
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["items"][0]["id"], fragment["id"])
+
+    def test_observation_driven_promotion_moves_holding_fragment_back_to_working(self) -> None:
+        source = self.engine.remember(content="x" * 40, actor="user")
+        self.engine.store.update_fragment_layer(source["id"], "holding")
+
+        source_fragment = self.engine.store.get_fragment(source["id"])
+        self.assertIsNotNone(source_fragment)
+        assert source_fragment is not None
+        self.assertEqual(source_fragment.layer, "holding")
+
+        self.engine.remember(
+            content="answer",
+            actor="agent",
+            reply_to=source["anchor_id"],
+            source_fragment_ids=[source["id"]],
+        )
+
+        promoted = self.engine.store.get_fragment(source["id"])
+        self.assertIsNotNone(promoted)
+        assert promoted is not None
+        self.assertEqual(promoted.layer, "working")
+
+    def test_remember_deduplicates_agent_capture_for_same_reply_to_and_content(self) -> None:
+        parent = self.engine.remember(content="question", actor="user")
+
+        first = self.engine.remember(content="same answer", actor="agent", reply_to=parent["anchor_id"])
+        second = self.engine.remember(content="same answer", actor="agent", reply_to=parent["anchor_id"])
+
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(first["anchor_id"], second["anchor_id"])
+        self.assertEqual(len(self.engine.store.list_anchors()), 2)
+        self.assertEqual(len(self.engine.store.list_fragments()), 2)
+
+    def test_remember_keeps_distinct_agent_forks_when_content_changes(self) -> None:
+        parent = self.engine.remember(content="question", actor="user")
+
+        first = self.engine.remember(content="first answer", actor="agent", reply_to=parent["anchor_id"])
+        second = self.engine.remember(content="edited answer", actor="agent", reply_to=parent["anchor_id"])
+
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertNotEqual(first["anchor_id"], second["anchor_id"])
+        self.assertEqual(len(self.engine.store.list_anchors()), 3)
+        self.assertEqual(len(self.engine.store.list_fragments()), 3)
+
+    def test_remember_deduplicated_agent_capture_merges_new_source_references(self) -> None:
+        parent = self.engine.remember(content="question", actor="user")
+        first_source = self.engine.remember(content="source one", actor="user")
+        second_source = self.engine.remember(content="source two", actor="user")
+
+        remembered = self.engine.remember(
+            content="same answer",
+            actor="agent",
+            reply_to=parent["anchor_id"],
+            source_fragment_ids=[first_source["id"]],
+        )
+        self.engine.remember(
+            content="same answer",
+            actor="agent",
+            reply_to=parent["anchor_id"],
+            source_fragment_ids=[second_source["id"]],
+        )
+
+        references = self.engine.store.list_references_from_anchor(remembered["anchor_id"])
+        self.assertEqual(
+            [reference.fragment_id for reference in references],
+            [remembered["id"], first_source["id"], second_source["id"]],
+        )
+
+    def test_compression_creates_child_and_moves_parent(self) -> None:
+        self.engine.close()
+        self.engine = make_engine(self.root / "compress", total_capacity=90)
+
+        parent = self.engine.remember(content="x" * 40, actor="user")
+        self.engine.remember(content="y" * 30, actor="user")
+
+        fragments = self.engine.store.list_fragments_by_anchor(parent["anchor_id"])
+        self.assertEqual(len(fragments), 2)
+        parent_fragment = self.engine.store.get_fragment(parent["id"])
+        child_fragment = next(fragment for fragment in fragments if fragment.id != parent["id"])
+
+        assert parent_fragment is not None
+        self.assertEqual(parent_fragment.layer, "holding")
+        self.assertEqual(child_fragment.layer, "working")
+        self.assertEqual(child_fragment.parent_id, parent_fragment.id)
+
+        child_feedback = self.engine.store.list_feedback_for_fragment(child_fragment.id)
+        child_references = self.engine.store.list_references_for_fragment(child_fragment.id)
+        self.assertEqual([item.verdict for item in child_feedback], ["positive"])
+        self.assertEqual(len(child_references), 2)
+
+    def test_purging_child_returns_failure_increment_to_parent(self) -> None:
+        self.engine.close()
+        self.engine = make_engine(self.root / "child-purge", total_capacity=90)
+
+        parent = self.engine.remember(content="x" * 40, actor="user")
+        self.engine.remember(content="y" * 30, actor="user")
+        child = next(
+            fragment
+            for fragment in self.engine.store.list_fragments_by_anchor(parent["anchor_id"])
+            if fragment.id != parent["id"]
+        )
+
+        self.engine.store.delete_fragment(child.id)
+        parent_fragment = self.engine.store.get_fragment(parent["id"])
+        self.assertIsNotNone(parent_fragment)
+        assert parent_fragment is not None
+        self.assertEqual(parent_fragment.compression_fail_count, 1)
+
+    def test_delete_candidate_chooses_lowest_search_priority_in_holding(self) -> None:
+        first = self.engine.remember(content="first", actor="user")
+        second = self.engine.remember(content="second", actor="user")
+        self.engine.feedback(
+            from_anchor_id=second["anchor_id"],
+            fragment_id=second["id"],
+            verdict="negative",
+        )
+        self.engine.store.update_fragment_layer(first["id"], "holding")
+        self.engine.store.update_fragment_layer(second["id"], "holding")
+
+        candidate = self.engine._select_delete_candidate(set())
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate.id, second["id"])
+
+    def test_dynamic_layer_ratio_uses_recent_sequence_metrics(self) -> None:
+        up_engine = make_engine(self.root / "ratio-up")
+        down_engine = make_engine(self.root / "ratio-down")
+        try:
+            up_anchor = up_engine.store.create_anchor(None, True)
+            up_engine.store.record_sequence_metrics(up_anchor, 10, 0, compress_count=8, delete_count=0)
+            increased = up_engine._effective_working_ratio()
+
+            down_anchor = down_engine.store.create_anchor(None, True)
+            down_engine.store.record_sequence_metrics(down_anchor, 10, 0, compress_count=0, delete_count=8)
+            decreased = down_engine._effective_working_ratio()
+        finally:
+            up_engine.close()
+            down_engine.close()
+
+        self.assertGreater(increased, self.engine.tuning.initial_working_ratio)
+        self.assertLess(decreased, self.engine.tuning.initial_working_ratio)
+
+    def test_fetch_supports_fragment_and_anchor_lookup(self) -> None:
+        self.engine.close()
+        self.engine = make_engine(self.root / "fetch", total_capacity=90)
+
+        parent = self.engine.remember(content="x" * 40, actor="user")
+        self.engine.remember(content="y" * 30, actor="user")
+        by_fragment = self.engine.fetch(fragment_id=parent["id"])
+        by_anchor = self.engine.fetch(anchor_id=parent["anchor_id"])
+
+        self.assertEqual(by_fragment["count"], 1)
+        self.assertEqual(by_fragment["items"][0]["id"], parent["id"])
+        self.assertEqual(by_anchor["count"], 2)
+
+    def test_stats_report_spec_fields_only(self) -> None:
+        self.engine.remember(content="stats me", actor="user")
+
+        stats = self.engine.stats()
+
+        self.assertEqual(
+            set(stats),
+            {
+                "fragment_count",
+                "working_count",
+                "holding_count",
+                "working_usage",
+                "holding_usage",
+                "working_budget",
+                "holding_budget",
+                "working_ratio",
+                "recent_compress_count",
+                "recent_delete_count",
+                "parameters",
+            },
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
