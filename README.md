@@ -27,7 +27,11 @@ breathing-memory install-codex
 
 `breathing-memory install-codex` registers the `breathing-memory` MCP server with the currently supported client and creates or updates the managed Breathing Memory block in the current repository's `AGENTS.md`.
 
-This repository is configured for tag-based PyPI publishing through GitHub Actions. Until the first public release is published, install from Git or from a local clone:
+Published package:
+
+- `pip install breathing-memory`
+
+Development installs:
 
 ```bash
 pip install git+https://github.com/KazinaG/breathing_memory.git
@@ -39,7 +43,8 @@ breathing-memory install-codex
 Release notes:
 
 - PyPI publish runs from `.github/workflows/publish.yml`
-- pushing a tag such as `v0.1.0` triggers the build and PyPI publish workflow
+- `v0.1.0` is published on PyPI
+- pushing a tag such as `v0.1.1` triggers the build and PyPI publish workflow
 
 ## Quickstart
 
