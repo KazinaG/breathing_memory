@@ -11,6 +11,7 @@ class MemoryConfig:
     db_path: Path = field(default_factory=resolve_db_path)
     total_capacity_mb: float = 32
     retrieval_mode: str = "auto"
+    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 
 @dataclass(frozen=True)

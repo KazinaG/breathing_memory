@@ -28,7 +28,7 @@ def _package_version() -> str:
     try:
         return version("breathing-memory")
     except PackageNotFoundError:
-        return "0.1.0"
+        return "0.2.0"
 
 
 def _tool_definitions() -> list[types.Tool]:
@@ -56,6 +56,7 @@ def _tool_definitions() -> list[types.Tool]:
                     "query": {"type": "string"},
                     "result_count": {"type": "integer", "minimum": 8},
                     "search_effort": {"type": "integer", "minimum": 32},
+                    "include_diagnostics": {"type": "boolean"},
                 },
                 "required": ["query"],
             },
@@ -106,6 +107,7 @@ def _search_handler(engine: BreathingMemoryEngine, arguments: dict[str, Any]) ->
         query=str(arguments["query"]),
         result_count=arguments.get("result_count"),
         search_effort=arguments.get("search_effort"),
+        include_diagnostics=bool(arguments.get("include_diagnostics", False)),
     )
 
 

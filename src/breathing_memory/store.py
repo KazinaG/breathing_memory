@@ -197,6 +197,17 @@ class SQLiteStore:
         self.connection.commit()
         return int(cursor.lastrowid)
 
+    def update_fragment_embedding(self, fragment_id: int, embedding_vector: Optional[bytes]) -> None:
+        self.connection.execute(
+            """
+            UPDATE fragments
+            SET embedding_vector = ?
+            WHERE id = ?
+            """,
+            (embedding_vector, fragment_id),
+        )
+        self.connection.commit()
+
     def create_reference(self, from_anchor_id: int, fragment_id: int) -> int:
         cursor = self.connection.execute(
             """

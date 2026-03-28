@@ -30,6 +30,7 @@ breathing-memory install-codex
 Published package:
 
 - `pip install breathing-memory`
+- semantic retrieval: `pip install 'breathing-memory[semantic]'`
 
 Development installs:
 
@@ -44,7 +45,8 @@ Release notes:
 
 - PyPI publish runs from `.github/workflows/publish.yml`
 - `v0.1.0` is published on PyPI
-- pushing a tag such as `v0.1.1` triggers the build and PyPI publish workflow
+- the next planned release is `v0.2.0`, which adds optional `lite` semantic retrieval, search diagnostics, and mode-aware Codex guidance
+- pushing a tag such as `v0.2.0` triggers the build and PyPI publish workflow
 
 ## Quickstart
 
@@ -80,7 +82,9 @@ Key points:
 - one user utterance becomes one fragment
 - one final user-facing agent answer is normally remembered on the next user turn
 - commentary is not remembered
+- track which retrieved fragments materially informed the final answer and pass them in `source_fragment_ids`
 - if the final answer materially used remembered fragments, pass those ids in `source_fragment_ids`
+- use `memory_feedback` only when the user's evaluation can be attributed safely
 - edits are modeled as forks rather than overwrites
 - duplicate deferred agent capture for the same reply target and content is suppressed
 - archived runtime files such as `archived_sessions/*.jsonl` are not the primary capture path
@@ -94,11 +98,13 @@ Current MCP tools:
 - `memory_feedback`
 - `memory_stats`
 
+`memory_search` keeps the default response compact. When debugging retrieval, callers can opt in to per-result diagnostics with `include_diagnostics=true`.
+
 ## Runtime Notes
 
 Breathing Memory stores data under the user app-data directory resolved by `platformdirs`, then separates memory by project identity. The exact SQLite path can be inspected with `breathing-memory doctor`.
 
-The current implementation is text-only. Runtime `auto` resolves to `super_lite`, which performs lexical retrieval only. The public search surface is already aligned for later semantic retrieval work, but explicit `lite` and `default` modes are not supported in this slice.
+The current implementation supports lexical retrieval by default and direct embedding retrieval in `lite` mode when the optional `semantic` extra is installed. Runtime `auto` resolves to `lite` when an embedding backend is available and otherwise falls back to `super_lite`. HNSW-backed `default` mode remains unimplemented.
 
 The current compression backend invokes a supported coding agent without leaving normal conversation history. In the current supported setup, that path uses Codex through `codex exec --ephemeral`.
 

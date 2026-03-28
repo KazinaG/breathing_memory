@@ -10,7 +10,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from breathing_memory.cli import CLIError, doctor, install_codex_registration, main
+from breathing_memory.cli import (
+    CLIError,
+    doctor,
+    install_codex_registration,
+    main,
+    render_agents_block,
+    resolve_agents_guidance_mode,
+)
 from breathing_memory.config import MemoryConfig
 from breathing_memory.engine import BreathingMemoryEngine
 
@@ -177,11 +184,22 @@ class CodexInstallTests(unittest.TestCase):
             updated = agents_path.read_text(encoding="utf-8")
             self.assertIn("Keep this note.", updated)
             self.assertIn('memory_remember(actor="user")', updated)
-            self.assertIn(
-                "Keep the query in the user's language and avoid unnecessary translation or paraphrase.",
-                updated,
-            )
+            self.assertIn("Keep the query in the user's language and avoid unnecessary translation.", updated)
+            self.assertIn("record that with `memory_feedback`.", updated)
             self.assertEqual(updated.count("<!-- BEGIN BREATHING MEMORY -->"), 1)
+
+    def test_render_agents_block_uses_super_lite_guidance(self) -> None:
+        block = render_agents_block(guidance_mode="super_lite")
+
+        self.assertIn("Choose a query optimized for lexical retrieval.", block)
+        self.assertIn("Use keyword- or phrase-oriented queries when they improve lexical retrieval.", block)
+        self.assertIn("### Feedback Attribution", block)
+        self.assertIn("skip `memory_feedback` rather than guessing.", block)
+        self.assertNotIn("Choose a query optimized for semantic retrieval.", block)
+
+    def test_resolve_agents_guidance_mode_prefers_semantic_when_available_in_auto(self) -> None:
+        self.assertEqual(resolve_agents_guidance_mode(retrieval_mode="auto", semantic_available=True), "semantic")
+        self.assertEqual(resolve_agents_guidance_mode(retrieval_mode="auto", semantic_available=False), "super_lite")
 
     def test_install_codex_fails_when_agents_file_is_not_writable(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

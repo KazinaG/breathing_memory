@@ -456,16 +456,16 @@ search_priority(m) = reference_score(m) * confidence_score(m)
 
 `search_priority` is the core non-semantic ranking value. It combines how often and how recently a fragment has been referenced with how positively it has been evaluated by surviving feedback.
 
-### Final Retrieval Score
+### Retrieval Ranking Score
 
 ```text
 normalized_search_priority(m) =
     search_priority(m) / max_search_priority(result_set)
 
-final_score(m) = semantic_similarity(m) * normalized_search_priority(m)
+ranking_score(m) = semantic_similarity(m) * normalized_search_priority(m)
 ```
 
-`normalized_search_priority` rescales the raw core score inside the current result set so it can be blended cleanly with semantic similarity. `final_score` is therefore a retrieval-time value, not a core stored memory value.
+`normalized_search_priority` rescales the raw core score inside the current result set so it can be blended cleanly with semantic similarity. `ranking_score` is therefore a retrieval-time, query-local value, not a core stored memory value. It is intended for ranking and diagnostics inside one search execution, not for absolute comparison across different queries.
 
 ### Deviation
 
@@ -670,6 +670,7 @@ sequenceDiagram
    - assign the fragment's `anchor_id` internally
    - place ordinary user / agent fragments into `working` by default
 4. Record references
+   - the MCP-calling agent carries forward the ids of materially used search results and passes them in `source_fragment_ids`
    - record the fragment's creation reference when a new fragment is created
    - when `source_fragment_ids` is present, record one reference for each unique materially used fragment rather than for generic search hits
    - when a duplicate deferred agent capture is reused, only missing material references are added
@@ -688,9 +689,12 @@ Purpose:
 Input:
 
 - `query`: string, authored by the MCP-calling agent
-  - keeps the user's language and avoids unnecessary translation or paraphrase
+  - is chosen by the MCP-calling agent for the current user request
+  - keeps the user's language and avoids unnecessary translation
+  - may be rewritten into a search-oriented query when that improves retrieval
 - `result_count`: optional integer, default `8`; accepted values are `8 * 2^n`
 - `search_effort`: optional integer, default `32`; accepted values are `32 * 2^n`, and in HNSW mode it maps directly to `efSearch`
+- `include_diagnostics`: optional boolean, default `false`; when enabled, each result may include retrieval-path diagnostics
 
 Output:
 
@@ -708,7 +712,8 @@ Output:
       layer,
       reference_score,
       confidence_score,
-      search_priority
+      search_priority,
+      diagnostics?
     },
     ...
   ],
@@ -729,7 +734,7 @@ sequenceDiagram
     Memory->>Memory: auto-select runtime retrieval path
     Memory->>Backend: retrieve candidate set
     Backend-->>Memory: candidate set
-    Memory->>Memory: rerank by final_score
+    Memory->>Memory: rerank by ranking_score
     Memory-->>Agent: ranked items, count
 ```
 
@@ -754,12 +759,13 @@ sequenceDiagram
 
 5. Ranking
    - retrieves a semantic result set first, then computes `normalized_search_priority` only inside that set
-   - reranks the result set by `final_score`
+   - reranks the result set by `ranking_score`
 
 6. Output semantics
    - returns ranked candidates without recording references
    - includes `anchor_id` for exact follow-up fetches
    - includes `reply_to` and `parent_id` as inspection metadata for the calling agent
+   - when `include_diagnostics = true`, each item may include retrieval-path details such as lexical rank or semantic similarity
    - client-side aliases such as `fast=32`, `balanced=64`, and `thorough=128` stay outside the public API
 
 ### `memory_fetch`

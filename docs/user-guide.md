@@ -145,17 +145,30 @@ Conversation capture timing:
 - if no later user turn arrives, the final agent answer may remain unremembered
 
 Use `source_fragment_ids` only when the deferred final answer materially used remembered fragments. `memory_search` itself does not record references.
+Track those materially used fragment ids while drafting the answer so they can be carried into the deferred `memory_remember(actor="agent")` call on the next user turn.
 
 ### `memory_search`
 
 Inputs:
 
 - `query`
-  - keep the query in the user's language and avoid unnecessary translation or paraphrase
+  - choose the query for the current user request
+  - keep the query in the user's language and avoid unnecessary translation
+  - rewrite it into a search-oriented query when that improves retrieval
 - optional `result_count`
 - optional `search_effort`
+- optional `include_diagnostics`
+  - when `true`, each result includes mode-specific retrieval diagnostics such as lexical rank details or semantic similarity
 
-The current implementation is text-only. Runtime `auto` resolves to `super_lite`, which performs lexical retrieval only. The public search surface is already aligned for later semantic retrieval work, but explicit `lite` and `default` modes are not yet supported in this slice.
+By default, the packaged runtime uses `super_lite`, which performs lexical retrieval only.
+
+If the optional semantic extra is installed:
+
+```bash
+pip install 'breathing-memory[semantic]'
+```
+
+then runtime `auto` resolves to `lite`, which performs direct embedding retrieval without ANN. HNSW-backed `default` mode is still reserved for a later slice.
 
 ### `memory_fetch`
 
@@ -168,6 +181,7 @@ Inputs:
 ### `memory_feedback`
 
 Use `memory_feedback` when the user clearly confirms, corrects, or evaluates remembered information and the calling agent can attribute that feedback safely.
+The calling agent decides whether that feedback applies to the immediately previous answer fragment, to remembered fragments used by that answer, or to both. If attribution is ambiguous, skip `memory_feedback`.
 
 ### `memory_stats`
 

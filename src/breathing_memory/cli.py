@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -23,7 +24,7 @@ MCP_SERVER_ARGS = ["serve"]
 AGENTS_FILENAME = "AGENTS.md"
 AGENTS_BLOCK_START = "<!-- BEGIN BREATHING MEMORY -->"
 AGENTS_BLOCK_END = "<!-- END BREATHING MEMORY -->"
-AGENTS_BLOCK_BODY = """## Breathing Memory
+AGENTS_BLOCK_PREFIX = """## Breathing Memory
 
 This repository uses Breathing Memory during Codex work.
 
@@ -49,21 +50,39 @@ For a root user message, omit `reply_to`.
 - If no later user turn arrives, the final agent answer may remain unremembered.
 
 ### Search Query
+"""
 
-- Use the latest user message itself as the default `memory_search.query`.
-- When retrieval quality would clearly benefit, an agent-authored query is also allowed.
-- Keep the query in the user's language and avoid unnecessary translation or paraphrase.
+AGENTS_SEARCH_QUERY_COMMON = """- `memory_search.query` must be chosen by the MCP-calling agent for the current user request.
+- Keep the query in the user's language and avoid unnecessary translation.
 - Use the default `search_effort` of `32` unless there is a concrete reason to choose a different valid value up front.
 - Start with a `result_count` of `8` unless there is a concrete reason to choose a different valid value up front.
-- The MCP-calling agent may begin with broader retrieval such as `result_count = 16` or higher `search_effort` when the query clearly warrants it.
 - If the first search result looks insufficient, rerun `memory_search` with a broader `result_count`, a higher `search_effort`, or both.
 - Treat `result_count` as powers of two from the base `8`, and `search_effort` as powers of two from the base `32`.
-- Treat semantic retrieval modes as `super_lite` (lexical only), `lite` (embedding without ANN index), and the default mode (embedding with HNSW).
+"""
+
+AGENTS_SEARCH_QUERY_SUPER_LITE = """- Choose a query optimized for lexical retrieval.
+- Rewrite the user request into a shorter search-oriented query when that improves lexical matching.
+- Use keyword- or phrase-oriented queries when they improve lexical retrieval.
+"""
+
+AGENTS_SEARCH_QUERY_SEMANTIC = """- Choose a query optimized for semantic retrieval.
+- Rewrite the user request into a search-oriented query when that improves semantic retrieval.
+- Do not collapse the query into a keyword bag unless there is a clear retrieval benefit.
+"""
+
+AGENTS_BLOCK_SUFFIX = """
 
 ### Source References
 
+- Track which fragments returned by `memory_search` materially inform the final answer while drafting it.
 - If the deferred final answer materially uses fragments returned by `memory_search`, pass those fragment ids as `source_fragment_ids` when that answer is persisted on the next user turn.
 - If no search result materially informed the final answer, omit `source_fragment_ids`.
+
+### Feedback Attribution
+
+- When a user message clearly confirms, corrects, or evaluates remembered information, record that with `memory_feedback`.
+- Decide whether that feedback applies to the immediately previous answer fragment, to referenced fragments used by that answer, or to both.
+- If the target of the feedback is ambiguous, skip `memory_feedback` rather than guessing.
 
 ### Failure Policy
 
@@ -140,7 +159,8 @@ def install_codex_registration(
     agents_path = working_directory / AGENTS_FILENAME
     validate_agents_update_target(agents_path)
     current_agents = agents_path.read_text(encoding="utf-8") if agents_path.exists() else None
-    planned_agents = upsert_agents_block(current_agents)
+    guidance_mode = resolve_agents_guidance_mode()
+    planned_agents = upsert_agents_block(current_agents, guidance_mode=guidance_mode)
 
     if shutil.which("codex", path=command_env.get("PATH")) is None:
         raise CLIError(
@@ -545,8 +565,8 @@ def write_agents_file(agents_path: Path, current: str | None, updated: str) -> s
     return f"Updated {AGENTS_FILENAME} with Breathing Memory instructions."
 
 
-def upsert_agents_block(current: str | None) -> str:
-    managed_block = render_agents_block()
+def upsert_agents_block(current: str | None, *, guidance_mode: str) -> str:
+    managed_block = render_agents_block(guidance_mode=guidance_mode)
     if current is None or not current.strip():
         return "# AGENTS\n\n" + managed_block + "\n"
 
@@ -567,5 +587,40 @@ def upsert_agents_block(current: str | None) -> str:
     return "\n\n".join(sections) + "\n"
 
 
-def render_agents_block() -> str:
-    return f"{AGENTS_BLOCK_START}\n{AGENTS_BLOCK_BODY.rstrip()}\n{AGENTS_BLOCK_END}"
+def render_agents_block(*, guidance_mode: str) -> str:
+    return f"{AGENTS_BLOCK_START}\n{build_agents_block_body(guidance_mode).rstrip()}\n{AGENTS_BLOCK_END}"
+
+
+def build_agents_block_body(guidance_mode: str) -> str:
+    if guidance_mode == "super_lite":
+        mode_specific = AGENTS_SEARCH_QUERY_SUPER_LITE
+    elif guidance_mode == "semantic":
+        mode_specific = AGENTS_SEARCH_QUERY_SEMANTIC
+    else:
+        raise ValueError("guidance_mode must be 'super_lite' or 'semantic'")
+    return (
+        AGENTS_BLOCK_PREFIX
+        + AGENTS_SEARCH_QUERY_COMMON
+        + mode_specific
+        + AGENTS_BLOCK_SUFFIX
+    )
+
+
+def resolve_agents_guidance_mode(
+    retrieval_mode: str | None = None,
+    semantic_available: bool | None = None,
+) -> str:
+    active_retrieval_mode = MemoryConfig().retrieval_mode if retrieval_mode is None else retrieval_mode
+    has_semantic_support = semantic_extra_available() if semantic_available is None else semantic_available
+
+    if active_retrieval_mode == "super_lite":
+        return "super_lite"
+    if active_retrieval_mode in {"lite", "default"}:
+        return "semantic"
+    if active_retrieval_mode == "auto":
+        return "semantic" if has_semantic_support else "super_lite"
+    raise ValueError("retrieval_mode must be 'auto', 'super_lite', 'lite', or 'default'")
+
+
+def semantic_extra_available() -> bool:
+    return importlib.util.find_spec("sentence_transformers") is not None

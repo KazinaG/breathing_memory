@@ -19,6 +19,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         config = MemoryConfig(
             db_path=Path(self.tempdir.name) / "memory.sqlite3",
             total_capacity_mb=120 / (1024 * 1024),
+            retrieval_mode="super_lite",
         )
         self.engine = BreathingMemoryEngine(config=config)
 
@@ -107,6 +108,32 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(feedback.isError)
         self.assertEqual(feedback.structuredContent["confidence_score"], 0.5)
         self.assertEqual(stats.structuredContent["fragment_count"], 1)
+
+    async def test_memory_search_can_include_diagnostics(self) -> None:
+        async def callback(session: ClientSession, init: types.InitializeResult):
+            del init
+            await session.call_tool(
+                "memory_remember",
+                {
+                    "content": "hello memory",
+                    "actor": "user",
+                },
+            )
+            return await session.call_tool(
+                "memory_search",
+                {
+                    "query": "hello",
+                    "result_count": 8,
+                    "search_effort": 32,
+                    "include_diagnostics": True,
+                },
+            )
+
+        result = await self._with_session(callback)
+        self.assertFalse(result.isError)
+        item = result.structuredContent["items"][0]
+        self.assertIn("diagnostics", item)
+        self.assertEqual(item["diagnostics"]["retrieval_mode"], "super_lite")
 
     async def test_memory_remember_rejects_unknown_reply_to(self) -> None:
         async def callback(session: ClientSession, init: types.InitializeResult):

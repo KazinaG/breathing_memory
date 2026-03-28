@@ -7,6 +7,7 @@ import unittest
 
 from breathing_memory.compression import StubCompressionBackend
 from breathing_memory.config import MemoryConfig
+from breathing_memory.embeddings import StubEmbeddingBackend
 from breathing_memory.engine import BreathingMemoryEngine
 from breathing_memory.store import SQLiteStore
 
@@ -14,14 +15,19 @@ from breathing_memory.store import SQLiteStore
 def make_engine(
     root: Path,
     total_capacity: int = 160,
-    retrieval_mode: str = "auto",
+    retrieval_mode: str = "super_lite",
+    embedding_backend: StubEmbeddingBackend | None = None,
 ) -> BreathingMemoryEngine:
     config = MemoryConfig(
         db_path=root / "memory.sqlite3",
         total_capacity_mb=total_capacity / (1024 * 1024),
         retrieval_mode=retrieval_mode,
     )
-    return BreathingMemoryEngine(config=config, compression_backend=StubCompressionBackend())
+    return BreathingMemoryEngine(
+        config=config,
+        compression_backend=StubCompressionBackend(),
+        embedding_backend=embedding_backend,
+    )
 
 
 class EngineTests(unittest.TestCase):
@@ -116,6 +122,7 @@ class EngineTests(unittest.TestCase):
 
         self.assertEqual(result["items"][0]["id"], fragment["id"])
         self.assertEqual(len(self.engine.store.list_references()), before)
+        self.assertNotIn("diagnostics", result["items"][0])
 
     def test_search_validates_result_count_and_search_effort(self) -> None:
         self.engine.remember(content="search me", actor="user")
@@ -125,13 +132,109 @@ class EngineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "search_effort must be 32 \\* 2\\^n"):
             self.engine.search("search", search_effort=48)
 
-    def test_search_rejects_unimplemented_semantic_modes(self) -> None:
+    def test_search_rejects_lite_without_embedding_backend(self) -> None:
         self.engine.close()
         self.engine = make_engine(self.root / "lite", retrieval_mode="lite")
+        self.engine.embedding_backend = None
         self.engine.remember(content="search me", actor="user")
 
-        with self.assertRaisesRegex(RuntimeError, "text-only slice"):
+        with self.assertRaisesRegex(RuntimeError, "requires an embedding backend"):
             self.engine.search("search")
+
+    def test_search_rejects_default_until_hnsw_exists(self) -> None:
+        backend = StubEmbeddingBackend({"search me": [1.0, 0.0], "search": [1.0, 0.0]})
+        self.engine.close()
+        self.engine = make_engine(self.root / "default", retrieval_mode="default", embedding_backend=backend)
+        self.engine.remember(content="search me", actor="user")
+
+        with self.assertRaisesRegex(RuntimeError, "HNSW index"):
+            self.engine.search("search")
+
+    def test_lite_search_reranks_semantic_candidates_by_search_priority(self) -> None:
+        backend = StubEmbeddingBackend(
+            {
+                "high priority lexical mismatch": [1.0, 0.0],
+                "semantic winner": [0.8, 0.2],
+                "semantic query": [0.8, 0.2],
+            }
+        )
+        self.engine.close()
+        self.engine = make_engine(self.root / "semantic", retrieval_mode="lite", embedding_backend=backend)
+        high = self.engine.remember(content="high priority lexical mismatch", actor="user")
+        semantic = self.engine.remember(content="semantic winner", actor="user")
+        self.engine.feedback(from_anchor_id=semantic["anchor_id"], fragment_id=semantic["id"], verdict="positive")
+        self.engine.feedback(from_anchor_id=semantic["anchor_id"], fragment_id=semantic["id"], verdict="positive")
+
+        result = self.engine.search("semantic query", result_count=8, search_effort=32)
+
+        self.assertEqual(result["items"][0]["id"], semantic["id"])
+        self.assertEqual(result["items"][1]["id"], high["id"])
+
+    def test_lite_search_can_include_semantic_diagnostics(self) -> None:
+        backend = StubEmbeddingBackend(
+            {
+                "semantic winner": [0.8, 0.2],
+                "semantic query": [0.8, 0.2],
+            }
+        )
+        self.engine.close()
+        self.engine = make_engine(self.root / "semantic-diag", retrieval_mode="lite", embedding_backend=backend)
+        fragment = self.engine.remember(content="semantic winner", actor="user")
+
+        result = self.engine.search(
+            "semantic query",
+            result_count=8,
+            search_effort=32,
+            include_diagnostics=True,
+        )
+
+        self.assertEqual(result["items"][0]["id"], fragment["id"])
+        diagnostics = result["items"][0]["diagnostics"]
+        self.assertEqual(diagnostics["retrieval_mode"], "lite")
+        self.assertIn("semantic_similarity", diagnostics)
+        self.assertIn("normalized_priority", diagnostics)
+        self.assertIn("ranking_score", diagnostics)
+
+    def test_lexical_search_can_include_diagnostics(self) -> None:
+        fragment = self.engine.remember(content="memory\nsearch ready", actor="user")
+
+        result = self.engine.search(
+            "search memory",
+            result_count=8,
+            search_effort=32,
+            include_diagnostics=True,
+        )
+
+        self.assertEqual(result["items"][0]["id"], fragment["id"])
+        diagnostics = result["items"][0]["diagnostics"]
+        self.assertEqual(diagnostics["retrieval_mode"], "super_lite")
+        self.assertTrue(diagnostics["lexical_rank"]["all_terms_present"])
+        self.assertEqual(diagnostics["lexical_rank"]["matched_term_count"], 2)
+
+    def test_auto_mode_uses_lite_when_embedding_backend_exists(self) -> None:
+        backend = StubEmbeddingBackend({"alpha semantic": [1.0, 0.0], "alpha": [1.0, 0.0]})
+        self.engine.close()
+        self.engine = make_engine(self.root / "auto", retrieval_mode="auto", embedding_backend=backend)
+        fragment = self.engine.remember(content="alpha semantic", actor="user")
+
+        result = self.engine.search("alpha", result_count=8, search_effort=32)
+
+        self.assertEqual(result["items"][0]["id"], fragment["id"])
+
+    def test_lite_search_backfills_missing_embeddings(self) -> None:
+        backend = StubEmbeddingBackend({"needs embedding": [1.0, 0.0], "needs": [1.0, 0.0]})
+        self.engine.close()
+        self.engine = make_engine(self.root / "backfill", retrieval_mode="lite", embedding_backend=backend)
+        fragment = self.engine.remember(content="needs embedding", actor="user")
+        self.engine.store.update_fragment_embedding(fragment["id"], None)
+
+        result = self.engine.search("needs", result_count=8, search_effort=32)
+
+        stored = self.engine.store.get_fragment(fragment["id"])
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertIsNotNone(stored.embedding_vector)
+        self.assertEqual(result["items"][0]["id"], fragment["id"])
 
     def test_search_normalizes_symbols_and_whitespace(self) -> None:
         fragment = self.engine.remember(content="`public/` 側には\nまだ残っています。", actor="user")

@@ -9,6 +9,13 @@ from typing import Iterable, Optional
 
 from .compression import CodexExecCompressionBackend, CompressionBackend
 from .config import EngineTuning, MemoryConfig
+from .embeddings import (
+    EmbeddingBackend,
+    cosine_similarity,
+    pack_embedding,
+    try_create_default_embedding_backend,
+    unpack_embedding,
+)
 from .models import Anchor, Fragment, FragmentFeedback, FragmentReference
 from .store import SQLiteStore
 
@@ -29,12 +36,14 @@ class BreathingMemoryEngine:
         tuning: Optional[EngineTuning] = None,
         store: Optional[SQLiteStore] = None,
         compression_backend: Optional[CompressionBackend] = None,
+        embedding_backend: Optional[EmbeddingBackend] = None,
     ):
         self.config = config or MemoryConfig()
         self.tuning = tuning or EngineTuning()
         self._validate_retrieval_mode(self.config.retrieval_mode)
         self.store = store or SQLiteStore(Path(self.config.db_path))
         self.compression_backend = compression_backend or CodexExecCompressionBackend()
+        self.embedding_backend = embedding_backend or try_create_default_embedding_backend()
 
     def close(self) -> None:
         self.store.close()
@@ -78,6 +87,7 @@ class BreathingMemoryEngine:
             parent_id=None,
             actor=actor,
             content=content,
+            embedding_vector=self._embed_content(content),
             layer="working",
         )
         self.store.create_reference(from_anchor_id=anchor_id, fragment_id=fragment_id)
@@ -110,15 +120,30 @@ class BreathingMemoryEngine:
         query: str,
         result_count: Optional[int] = None,
         search_effort: Optional[int] = None,
+        include_diagnostics: bool = False,
     ) -> dict:
         normalized_result_count = self._normalize_result_count(result_count)
         self._normalize_search_effort(search_effort)
         retrieval_mode = self._resolve_retrieval_mode()
-        if retrieval_mode in {"lite", "default"}:
-            raise RuntimeError(f"retrieval mode '{retrieval_mode}' is not supported in this text-only slice")
 
         normalized_query = self._normalize_lexical_text(query)
         query_terms = self._search_terms(normalized_query)
+        if not normalized_query:
+            return self._search_by_search_priority(
+                normalized_result_count,
+                retrieval_mode=retrieval_mode,
+                include_diagnostics=include_diagnostics,
+            )
+
+        if retrieval_mode == "default":
+            raise RuntimeError("retrieval mode 'default' is not supported until the HNSW index is implemented")
+        if retrieval_mode == "lite":
+            return self._semantic_search(
+                query,
+                normalized_result_count,
+                include_diagnostics=include_diagnostics,
+            )
+
         fragments = self.store.list_fragments()
         lexical_matches: list[tuple[Fragment, tuple[int, int, int, float]]] = []
         if normalized_query:
@@ -140,8 +165,13 @@ class BreathingMemoryEngine:
             )
         )
         items = [
-            self._serialize_search_item(fragment)
-            for fragment, _ in lexical_matches[:normalized_result_count]
+            self._serialize_search_item(
+                fragment,
+                diagnostics=self._lexical_diagnostics(lexical_rank, retrieval_mode)
+                if include_diagnostics
+                else None,
+            )
+            for fragment, lexical_rank in lexical_matches[:normalized_result_count]
         ]
         return {"items": items, "count": len(items)}
 
@@ -221,8 +251,98 @@ class BreathingMemoryEngine:
 
     def _resolve_retrieval_mode(self) -> str:
         if self.config.retrieval_mode == "auto":
+            if self.embedding_backend is not None:
+                return "lite"
             return "super_lite"
         return self.config.retrieval_mode
+
+    def _semantic_search(
+        self,
+        query: str,
+        result_count: int,
+        *,
+        include_diagnostics: bool = False,
+    ) -> dict:
+        if self.embedding_backend is None:
+            raise RuntimeError("retrieval mode 'lite' requires an embedding backend")
+        fragments = self.store.list_fragments()
+        if not fragments:
+            return {"items": [], "count": 0}
+
+        self._ensure_fragment_embeddings(fragments)
+        embedded_fragments = [fragment for fragment in self.store.list_fragments() if fragment.embedding_vector is not None]
+        if not embedded_fragments:
+            return {"items": [], "count": 0}
+
+        query_vector = self.embedding_backend.embed_texts([query])[0]
+        semantic_candidates: list[tuple[Fragment, float]] = []
+        for fragment in embedded_fragments:
+            assert fragment.embedding_vector is not None
+            similarity = cosine_similarity(query_vector, unpack_embedding(fragment.embedding_vector))
+            semantic_similarity = (similarity + 1.0) / 2.0
+            semantic_candidates.append((fragment, semantic_similarity))
+
+        semantic_candidates.sort(
+            key=lambda item: (
+                -item[1],
+                -self._search_priority(item[0].id),
+                item[0].id,
+            )
+        )
+        semantic_candidates = semantic_candidates[:result_count]
+        normalized_priorities = self._normalize_search_priorities(
+            [self._search_priority(fragment.id) for fragment, _ in semantic_candidates]
+        )
+        reranked: list[tuple[Fragment, float, float, float]] = []
+        for (fragment, similarity), normalized_priority in zip(semantic_candidates, normalized_priorities):
+            final_score = similarity * normalized_priority
+            reranked.append((fragment, final_score, similarity, normalized_priority))
+        reranked.sort(
+            key=lambda item: (
+                -item[1],
+                -item[2],
+                -self._search_priority(item[0].id),
+                item[0].id,
+            )
+        )
+        items = [
+            self._serialize_search_item(
+                fragment,
+                diagnostics={
+                    "retrieval_mode": "lite",
+                    "semantic_similarity": similarity,
+                    "normalized_priority": normalized_priority,
+                    "ranking_score": final_score,
+                }
+                if include_diagnostics
+                else None,
+            )
+            for fragment, final_score, similarity, normalized_priority in reranked
+        ]
+        return {"items": items, "count": len(items)}
+
+    def _search_by_search_priority(
+        self,
+        result_count: int,
+        *,
+        retrieval_mode: str,
+        include_diagnostics: bool = False,
+    ) -> dict:
+        fragments = self.store.list_fragments()
+        fragments.sort(key=lambda fragment: (-self._search_priority(fragment.id), fragment.id))
+        items = [
+            self._serialize_search_item(
+                fragment,
+                diagnostics={
+                    "retrieval_mode": retrieval_mode,
+                    "ranking_score": self._search_priority(fragment.id),
+                }
+                if include_diagnostics
+                else None,
+            )
+            for fragment in fragments[:result_count]
+        ]
+        return {"items": items, "count": len(items)}
 
     def _normalize_result_count(self, result_count: Optional[int]) -> int:
         value = self.tuning.default_result_count if result_count is None else int(result_count)
@@ -257,6 +377,32 @@ class BreathingMemoryEngine:
 
     def _normalize_dedup_content(self, content: str) -> str:
         return content.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    def _embed_content(self, content: str) -> Optional[bytes]:
+        if self.embedding_backend is None:
+            return None
+        vector = self.embedding_backend.embed_texts([content])[0]
+        return pack_embedding(vector)
+
+    def _ensure_fragment_embeddings(self, fragments: Iterable[Fragment]) -> None:
+        if self.embedding_backend is None:
+            return
+        missing = [fragment for fragment in fragments if fragment.embedding_vector is None]
+        if not missing:
+            return
+        vectors = self.embedding_backend.embed_texts([fragment.content for fragment in missing])
+        for fragment, vector in zip(missing, vectors):
+            self.store.update_fragment_embedding(fragment.id, pack_embedding(vector))
+
+    def _normalize_search_priorities(self, priorities: list[float]) -> list[float]:
+        if not priorities:
+            return []
+        lower = min(priorities)
+        upper = max(priorities)
+        if math.isclose(lower, upper):
+            return [1.0 for _ in priorities]
+        span = upper - lower
+        return [0.1 + 0.9 * ((priority - lower) / span) for priority in priorities]
 
     def _find_duplicate_agent_fragment(
         self,
@@ -372,6 +518,7 @@ class BreathingMemoryEngine:
             parent_id=candidate.id,
             actor=candidate.actor,
             content=result.content,
+            embedding_vector=self._embed_content(result.content),
             layer="working",
         )
         self.store.copy_references(candidate.id, child_id)
@@ -520,9 +667,14 @@ class BreathingMemoryEngine:
             "search_priority": self._search_priority(fragment.id),
         }
 
-    def _serialize_search_item(self, fragment: Fragment) -> dict:
+    def _serialize_search_item(
+        self,
+        fragment: Fragment,
+        *,
+        diagnostics: Optional[dict] = None,
+    ) -> dict:
         anchor = self._require_anchor(fragment.anchor_id)
-        return {
+        item = {
             "id": fragment.id,
             "anchor_id": fragment.anchor_id,
             "parent_id": fragment.parent_id,
@@ -534,6 +686,25 @@ class BreathingMemoryEngine:
             "reference_score": self._reference_score(fragment.id),
             "confidence_score": self._confidence_score(fragment.id),
             "search_priority": self._search_priority(fragment.id),
+        }
+        if diagnostics is not None:
+            item["diagnostics"] = diagnostics
+        return item
+
+    def _lexical_diagnostics(
+        self,
+        lexical_rank: tuple[int, int, int, float],
+        retrieval_mode: str,
+    ) -> dict:
+        all_terms_present, exact_match, matched_terms, coverage = lexical_rank
+        return {
+            "retrieval_mode": retrieval_mode,
+            "lexical_rank": {
+                "all_terms_present": bool(all_terms_present),
+                "exact_match": bool(exact_match),
+                "matched_term_count": matched_terms,
+                "coverage": coverage,
+            },
         }
 
     def _require_anchor(self, anchor_id: int) -> Anchor:
