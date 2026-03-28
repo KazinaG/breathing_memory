@@ -664,8 +664,8 @@ sequenceDiagram
    - validate `reply_to` against a live remembered anchor when provided
 2. Detect duplicate deferred agent capture
    - when `actor = agent` and `reply_to` is present, the implementation may treat the call as idempotent
-   - if an existing root agent fragment already answers the same `reply_to` with the same normalized content, reuse that fragment instead of allocating a new anchor
-   - this duplicate-suppression rule is intentionally narrow: it prevents accidental re-capture of the same deferred agent answer without collapsing legitimate user forks or edited alternatives with different content
+   - if an existing root agent fragment already matches the same `reply_to` and normalized content, reuse that fragment instead of allocating a new anchor
+   - user-side duplicate checks are caller-driven; the MCP-calling agent should consult `memory_recent` before calling `memory_remember(actor="user")`
 3. Create the fragment when no duplicate applies
    - assign the fragment's `anchor_id` internally
    - place ordinary user / agent fragments into `working` by default

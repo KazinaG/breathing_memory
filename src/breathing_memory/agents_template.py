@@ -15,8 +15,8 @@ This repository uses Breathing Memory during Codex work.
 
 For every user turn in this repository, Codex must use the MCP tools in this order:
 
-1. If the immediately previous final agent answer has not yet been remembered, save it first with `memory_remember(actor="agent")`
-2. Save the current user message with `memory_remember(actor="user")`
+1. If the immediately previous final agent answer has not yet been remembered, check `memory_recent` for the latest remembered `agent` fragment with the same `reply_to`; if the latest remembered fragment already has the same content, skip the duplicate save, otherwise save it with `memory_remember(actor="agent")`
+2. Check `memory_recent` before saving the current user message; use `reply_to + content` as the first duplicate check, and if needed use a very recent `actor + content` fallback before calling `memory_remember(actor="user")`
 3. Search with `memory_search` before producing the next final answer
 
 Use the returned previous-agent `anchor_id` as the current user's `reply_to` when the user is replying to the immediately previous answer.
@@ -28,8 +28,10 @@ For a root user message, omit `reply_to`.
 - Save every user message.
 - Save each final user-facing answer on the next user turn.
 - Do not save intermediary commentary, progress updates, or tool-status messages.
+- Use `memory_recent` as the caller-side first check against immediately repeated saves before calling `memory_remember`.
 - Do not save duplicate retries of the same final answer.
-- `memory_remember` suppresses duplicate deferred agent capture for the same `reply_to` and content, but callers must still pass accurate `reply_to` values and capture timing.
+- `memory_remember` suppresses duplicate deferred `agent` capture for the same `reply_to` and content, but callers must still pass accurate `reply_to` values and capture timing.
+- For `user` messages, use caller-side `memory_recent` checks before `memory_remember` instead of relying on engine-side duplicate suppression.
 - If no later user turn arrives, the final agent answer may remain unremembered.
 
 ### Search Query

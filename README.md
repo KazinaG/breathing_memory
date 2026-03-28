@@ -46,7 +46,8 @@ Release notes:
 - PyPI publish runs from `.github/workflows/publish.yml`
 - `v0.1.0` is published on PyPI
 - `v0.2.0` is published on PyPI with optional `lite` semantic retrieval, search diagnostics, and mode-aware Codex guidance
-- pushing a tag such as `v0.2.0` triggers the build and PyPI publish workflow
+- the current development version is `v0.3.0`, which adds `memory_recent` and caller-side duplicate-check guidance
+- pushing a tag such as `v0.3.0` triggers the build and PyPI publish workflow
 
 ## Quickstart
 
@@ -72,21 +73,24 @@ Breathing Memory does not auto-capture the full client conversation by itself. T
 
 The basic flow is:
 
-1. If there is an unremembered final agent answer from the previous turn, save it first with `memory_remember(actor="agent")`
-2. Save the current user message with `memory_remember(actor="user")`
-3. Search before an answer with `memory_search`
-4. Record feedback with `memory_feedback` when the user clearly confirms or corrects remembered information
+1. Check `memory_recent` before persisting immediately repeated agent / user turns
+2. If there is an unremembered final agent answer from the previous turn, save it first with `memory_remember(actor="agent")`
+3. Save the current user message with `memory_remember(actor="user")`
+4. Search before an answer with `memory_search`
+5. Record feedback with `memory_feedback` when the user clearly confirms or corrects remembered information
 
 Key points:
 
 - one user utterance becomes one fragment
 - one final user-facing agent answer is normally remembered on the next user turn
 - commentary is not remembered
+- use `memory_recent` as a caller-side first check before `memory_remember` when you suspect an immediately repeated save
 - track which retrieved fragments materially informed the final answer and pass them in `source_fragment_ids`
 - if the final answer materially used remembered fragments, pass those ids in `source_fragment_ids`
 - use `memory_feedback` only when the user's evaluation can be attributed safely
 - edits are modeled as forks rather than overwrites
 - duplicate deferred agent capture for the same reply target and content is suppressed
+- user duplicate checks are caller-side and should use `memory_recent` rather than engine-side suppression
 - archived runtime files such as `archived_sessions/*.jsonl` are not the primary capture path
 - if no later user turn arrives, the final agent answer may remain unremembered
 
@@ -95,6 +99,7 @@ Current MCP tools:
 - `memory_remember`
 - `memory_search`
 - `memory_fetch`
+- `memory_recent`
 - `memory_feedback`
 - `memory_stats`
 

@@ -160,6 +160,10 @@ Conversation capture timing:
 - save the immediately previous final agent answer on the next user turn
 - if no later user turn arrives, the final agent answer may remain unremembered
 
+Use `memory_recent` as a caller-side first check before `memory_remember` when you suspect an immediately repeated save.
+When `reply_to` is present, `memory_remember` suppresses duplicate deferred `agent` capture for the same `reply_to` and content.
+For `user` messages, treat duplicate checks as caller-side logic and use `memory_recent` before `memory_remember`.
+
 Use `source_fragment_ids` only when the deferred final answer materially used remembered fragments. `memory_search` itself does not record references.
 Track those materially used fragment ids while drafting the answer so they can be carried into the deferred `memory_remember(actor="agent")` call on the next user turn.
 
@@ -193,6 +197,16 @@ Inputs:
 - `fragment_id` or `anchor_id`
 
 `memory_fetch` performs direct lookup rather than relevance ranking. `fragment_id` returns that fragment itself. `anchor_id` returns the fragments under that semantic item, ordered by descending `search_priority`.
+
+### `memory_recent`
+
+Inputs:
+
+- optional `limit`
+- optional `actor`
+- optional `reply_to`
+
+Use `memory_recent` to inspect the latest remembered root fragments before calling `memory_remember` when you need a caller-side duplicate check.
 
 ### `memory_feedback`
 

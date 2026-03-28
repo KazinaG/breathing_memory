@@ -284,6 +284,26 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(len(self.engine.store.list_anchors()), 2)
         self.assertEqual(len(self.engine.store.list_fragments()), 2)
 
+    def test_remember_keeps_distinct_user_capture_for_same_reply_to_and_content(self) -> None:
+        parent = self.engine.remember(content="question", actor="agent")
+
+        first = self.engine.remember(content="same follow-up", actor="user", reply_to=parent["anchor_id"])
+        second = self.engine.remember(content="same follow-up", actor="user", reply_to=parent["anchor_id"])
+
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertNotEqual(first["anchor_id"], second["anchor_id"])
+        self.assertEqual(len(self.engine.store.list_anchors()), 3)
+        self.assertEqual(len(self.engine.store.list_fragments()), 3)
+
+    def test_remember_keeps_distinct_root_user_messages_when_content_matches(self) -> None:
+        first = self.engine.remember(content="same root", actor="user")
+        second = self.engine.remember(content="same root", actor="user")
+
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertNotEqual(first["anchor_id"], second["anchor_id"])
+        self.assertEqual(len(self.engine.store.list_anchors()), 2)
+        self.assertEqual(len(self.engine.store.list_fragments()), 2)
+
     def test_remember_keeps_distinct_agent_forks_when_content_changes(self) -> None:
         parent = self.engine.remember(content="question", actor="user")
 
@@ -318,6 +338,16 @@ class EngineTests(unittest.TestCase):
             [reference.fragment_id for reference in references],
             [remembered["id"], first_source["id"], second_source["id"]],
         )
+
+    def test_recent_returns_latest_root_fragments_with_filters(self) -> None:
+        root = self.engine.remember(content="root", actor="user")
+        older = self.engine.remember(content="older", actor="user", reply_to=root["anchor_id"])
+        newest = self.engine.remember(content="newer", actor="user", reply_to=root["anchor_id"])
+
+        result = self.engine.recent(limit=2, actor="user", reply_to=root["anchor_id"])
+
+        self.assertEqual(result["count"], 2)
+        self.assertEqual([item["id"] for item in result["items"]], [newest["id"], older["id"]])
 
     def test_compression_creates_child_and_moves_parent(self) -> None:
         self.engine.close()

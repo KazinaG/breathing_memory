@@ -50,18 +50,25 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
 
         return result
 
-    async def test_tools_list_exposes_five_tools(self) -> None:
+    async def test_tools_list_exposes_six_tools(self) -> None:
         async def callback(session: ClientSession, init: types.InitializeResult):
             tools = await session.list_tools()
             return init, tools
 
         init, tools = await self._with_session(callback)
         self.assertEqual(init.protocolVersion, types.LATEST_PROTOCOL_VERSION)
-        self.assertEqual(len(tools.tools), 5)
+        self.assertEqual(len(tools.tools), 6)
         names = {tool.name for tool in tools.tools}
         self.assertEqual(
             names,
-            {"memory_remember", "memory_search", "memory_fetch", "memory_feedback", "memory_stats"},
+            {
+                "memory_remember",
+                "memory_search",
+                "memory_fetch",
+                "memory_recent",
+                "memory_feedback",
+                "memory_stats",
+            },
         )
 
     async def test_memory_tool_flow(self) -> None:
@@ -197,6 +204,87 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(second.isError)
         self.assertEqual(first.structuredContent["id"], second.structuredContent["id"])
         self.assertEqual(stats.structuredContent["fragment_count"], 2)
+
+    async def test_memory_remember_keeps_distinct_user_capture(self) -> None:
+        async def callback(session: ClientSession, init: types.InitializeResult):
+            del init
+            parent = await session.call_tool(
+                "memory_remember",
+                {
+                    "content": "question",
+                    "actor": "agent",
+                },
+            )
+            parent_content = parent.structuredContent
+            assert isinstance(parent_content, dict)
+
+            first = await session.call_tool(
+                "memory_remember",
+                {
+                    "content": "same follow-up",
+                    "actor": "user",
+                    "reply_to": parent_content["anchor_id"],
+                },
+            )
+            second = await session.call_tool(
+                "memory_remember",
+                {
+                    "content": "same follow-up",
+                    "actor": "user",
+                    "reply_to": parent_content["anchor_id"],
+                },
+            )
+            stats = await session.call_tool("memory_stats", {})
+            return first, second, stats
+
+        first, second, stats = await self._with_session(callback)
+        self.assertFalse(first.isError)
+        self.assertFalse(second.isError)
+        self.assertNotEqual(first.structuredContent["id"], second.structuredContent["id"])
+        self.assertEqual(stats.structuredContent["fragment_count"], 3)
+
+    async def test_memory_recent_returns_latest_matching_fragments(self) -> None:
+        async def callback(session: ClientSession, init: types.InitializeResult):
+            del init
+            root = await session.call_tool(
+                "memory_remember",
+                {
+                    "content": "root",
+                    "actor": "user",
+                },
+            )
+            root_content = root.structuredContent
+            assert isinstance(root_content, dict)
+            await session.call_tool(
+                "memory_remember",
+                {
+                    "content": "older",
+                    "actor": "user",
+                    "reply_to": root_content["anchor_id"],
+                },
+            )
+            newer = await session.call_tool(
+                "memory_remember",
+                {
+                    "content": "newer",
+                    "actor": "user",
+                    "reply_to": root_content["anchor_id"],
+                },
+            )
+            recent = await session.call_tool(
+                "memory_recent",
+                {
+                    "limit": 2,
+                    "actor": "user",
+                    "reply_to": root_content["anchor_id"],
+                },
+            )
+            return newer, recent
+
+        newer, recent = await self._with_session(callback)
+        self.assertFalse(recent.isError)
+        self.assertEqual(recent.structuredContent["count"], 2)
+        self.assertEqual(recent.structuredContent["items"][0]["id"], newer.structuredContent["id"])
 
 
 if __name__ == "__main__":

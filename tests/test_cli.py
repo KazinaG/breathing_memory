@@ -186,6 +186,8 @@ class CodexInstallTests(unittest.TestCase):
             updated = agents_path.read_text(encoding="utf-8")
             self.assertIn("Keep this note.", updated)
             self.assertIn('memory_remember(actor="user")', updated)
+            self.assertIn("check `memory_recent`", updated)
+            self.assertIn("very recent `actor + content` fallback", updated)
             self.assertIn("Keep the query in the user's language and avoid unnecessary translation.", updated)
             self.assertIn("record that with `memory_feedback`.", updated)
             self.assertEqual(updated.count("<!-- BEGIN BREATHING MEMORY -->"), 1)
@@ -195,6 +197,8 @@ class CodexInstallTests(unittest.TestCase):
 
         self.assertIn("Choose a query optimized for lexical retrieval.", block)
         self.assertIn("Use keyword- or phrase-oriented queries when they improve lexical retrieval.", block)
+        self.assertIn("Use `memory_recent` as the caller-side first check", block)
+        self.assertIn("For `user` messages, use caller-side `memory_recent` checks", block)
         self.assertIn("### Feedback Attribution", block)
         self.assertIn("skip `memory_feedback` rather than guessing.", block)
         self.assertNotIn("Choose a query optimized for semantic retrieval.", block)
@@ -392,7 +396,14 @@ class CodexInstallTests(unittest.TestCase):
         self.assertEqual(output["initialize_protocol"], output["latest_protocol"])
         self.assertEqual(
             output["tool_names"],
-            ["memory_remember", "memory_search", "memory_fetch", "memory_feedback", "memory_stats"],
+            [
+                "memory_remember",
+                "memory_search",
+                "memory_fetch",
+                "memory_recent",
+                "memory_feedback",
+                "memory_stats",
+            ],
         )
         self.assertEqual(output["stats_fragment_count"], 0)
 

@@ -17,8 +17,8 @@ SERVER_NAME = "breathing-memory"
 SERVER_INSTRUCTIONS = (
     "Breathing Memory provides tools for persisting and retrieving collaboration memory. "
     "Use memory_remember to persist a turn, memory_search to retrieve relevant fragments, "
-    "memory_fetch for direct lookup, memory_feedback to record evaluation, and memory_stats "
-    "for diagnostics."
+    "memory_fetch for direct lookup, memory_recent to inspect the latest remembered root fragments, "
+    "memory_feedback to record evaluation, and memory_stats for diagnostics."
 )
 
 ToolHandler = Callable[[BreathingMemoryEngine, dict[str, Any]], dict[str, Any]]
@@ -28,7 +28,7 @@ def _package_version() -> str:
     try:
         return version("breathing-memory")
     except PackageNotFoundError:
-        return "0.2.0"
+        return "0.3.0"
 
 
 def _tool_definitions() -> list[types.Tool]:
@@ -69,6 +69,18 @@ def _tool_definitions() -> list[types.Tool]:
                 "properties": {
                     "fragment_id": {"type": "integer"},
                     "anchor_id": {"type": "integer"},
+                },
+            },
+        ),
+        types.Tool(
+            name="memory_recent",
+            description="Fetch the most recent remembered root fragments, optionally filtered by actor and reply target.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "minimum": 1},
+                    "actor": {"type": "string", "enum": ["user", "agent"]},
+                    "reply_to": {"type": "integer"},
                 },
             },
         ),
@@ -126,6 +138,14 @@ def _feedback_handler(engine: BreathingMemoryEngine, arguments: dict[str, Any]) 
     )
 
 
+def _recent_handler(engine: BreathingMemoryEngine, arguments: dict[str, Any]) -> dict[str, Any]:
+    return engine.recent(
+        limit=int(arguments.get("limit", 4)),
+        actor=arguments.get("actor"),
+        reply_to=arguments.get("reply_to"),
+    )
+
+
 def _stats_handler(engine: BreathingMemoryEngine, arguments: dict[str, Any]) -> dict[str, Any]:
     del arguments
     return engine.stats()
@@ -135,6 +155,7 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "memory_remember": _remember_handler,
     "memory_search": _search_handler,
     "memory_fetch": _fetch_handler,
+    "memory_recent": _recent_handler,
     "memory_feedback": _feedback_handler,
     "memory_stats": _stats_handler,
 }

@@ -115,6 +115,31 @@ class BreathingMemoryEngine:
             raise RuntimeError("remembered fragment was not preserved")
         return self._serialize_fragment(fragment)
 
+    def recent(
+        self,
+        *,
+        limit: int = 4,
+        actor: Optional[str] = None,
+        reply_to: Optional[int] = None,
+    ) -> dict:
+        normalized_limit = int(limit)
+        if normalized_limit <= 0:
+            raise ValueError("limit must be a positive integer")
+        if actor is not None and actor not in {"user", "agent"}:
+            raise ValueError("actor must be 'user' or 'agent'")
+        if reply_to is not None and not self.store.anchor_exists(reply_to):
+            raise ValueError("reply_to anchor not found")
+
+        fragments = self.store.list_recent_root_fragments(
+            limit=normalized_limit,
+            actor=actor,
+            reply_to_anchor_id=reply_to,
+        )
+        return {
+            "items": [self._serialize_search_item(fragment) for fragment in fragments],
+            "count": len(fragments),
+        }
+
     def search(
         self,
         query: str,
@@ -414,7 +439,7 @@ class BreathingMemoryEngine:
             return None
 
         normalized_content = self._normalize_dedup_content(content)
-        for candidate in self.store.list_root_fragments_replying_to_anchor(reply_to, actor="agent"):
+        for candidate in self.store.list_root_fragments_replying_to_anchor(reply_to, actor=actor):
             if self._normalize_dedup_content(candidate.content) == normalized_content:
                 return candidate
         return None

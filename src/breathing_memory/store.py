@@ -336,6 +336,40 @@ class SQLiteStore:
         ).fetchall()
         return [self._row_to_fragment(row) for row in rows]
 
+    def list_recent_root_fragments(
+        self,
+        *,
+        limit: int,
+        actor: Optional[str] = None,
+        reply_to_anchor_id: Optional[int] = None,
+    ) -> list[Fragment]:
+        conditions = ["fragments.parent_id IS NULL"]
+        parameters: list[object] = []
+
+        if actor is not None:
+            conditions.append("fragments.actor = ?")
+            parameters.append(actor)
+        if reply_to_anchor_id is None:
+            conditions.append("anchors.replies_to_anchor_id IS NULL")
+        else:
+            conditions.append("anchors.replies_to_anchor_id = ?")
+            parameters.append(reply_to_anchor_id)
+
+        parameters.append(limit)
+        where_clause = " AND ".join(conditions)
+        rows = self.connection.execute(
+            f"""
+            SELECT fragments.*
+            FROM fragments
+            INNER JOIN anchors ON anchors.id = fragments.anchor_id
+            WHERE {where_clause}
+            ORDER BY anchors.id DESC, fragments.id DESC
+            LIMIT ?
+            """,
+            tuple(parameters),
+        ).fetchall()
+        return [self._row_to_fragment(row) for row in rows]
+
     def list_references(self) -> list[FragmentReference]:
         rows = self.connection.execute(
             "SELECT * FROM fragment_references ORDER BY id ASC"
