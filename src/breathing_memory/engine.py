@@ -7,6 +7,7 @@ import re
 from statistics import median
 from typing import Iterable, Optional
 
+from .ann import ApproximateNearestNeighborIndex, HnswIndex
 from .compression import CodexExecCompressionBackend, CompressionBackend
 from .config import EngineTuning, MemoryConfig
 from .embeddings import (
@@ -37,6 +38,7 @@ class BreathingMemoryEngine:
         store: Optional[SQLiteStore] = None,
         compression_backend: Optional[CompressionBackend] = None,
         embedding_backend: Optional[EmbeddingBackend] = None,
+        ann_index: Optional[ApproximateNearestNeighborIndex] = None,
     ):
         self.config = config or MemoryConfig()
         self.tuning = tuning or EngineTuning()
@@ -44,6 +46,7 @@ class BreathingMemoryEngine:
         self.store = store or SQLiteStore(Path(self.config.db_path))
         self.compression_backend = compression_backend or CodexExecCompressionBackend()
         self.embedding_backend = embedding_backend or try_create_default_embedding_backend()
+        self.ann_index = ann_index or HnswIndex(Path(self.config.db_path))
 
     def close(self) -> None:
         self.store.close()
@@ -110,6 +113,7 @@ class BreathingMemoryEngine:
             compress_count=counters["compress"],
             delete_count=counters["delete"],
         )
+        self._sync_ann_index_for_new_fragment(fragment_id)
         fragment = self.store.get_fragment(fragment_id)
         if fragment is None:
             raise RuntimeError("remembered fragment was not preserved")
@@ -148,7 +152,7 @@ class BreathingMemoryEngine:
         include_diagnostics: bool = False,
     ) -> dict:
         normalized_result_count = self._normalize_result_count(result_count)
-        self._normalize_search_effort(search_effort)
+        normalized_search_effort = self._normalize_search_effort(search_effort)
         retrieval_mode = self._resolve_retrieval_mode()
 
         normalized_query = self._normalize_lexical_text(query)
@@ -161,11 +165,19 @@ class BreathingMemoryEngine:
             )
 
         if retrieval_mode == "default":
-            raise RuntimeError("retrieval mode 'default' is not supported until the HNSW index is implemented")
+            return self._semantic_search(
+                query,
+                normalized_result_count,
+                retrieval_mode="default",
+                search_effort=normalized_search_effort,
+                include_diagnostics=include_diagnostics,
+            )
         if retrieval_mode == "lite":
             return self._semantic_search(
                 query,
                 normalized_result_count,
+                retrieval_mode="lite",
+                search_effort=normalized_search_effort,
                 include_diagnostics=include_diagnostics,
             )
 
@@ -276,9 +288,15 @@ class BreathingMemoryEngine:
 
     def _resolve_retrieval_mode(self) -> str:
         if self.config.retrieval_mode == "auto":
-            if self.embedding_backend is not None:
-                return "lite"
-            return "super_lite"
+            if self.embedding_backend is None:
+                return "super_lite"
+            ann_status = self.ann_index.inspect(
+                fragment_ids=[fragment.id for fragment in self.store.list_fragments()],
+                embedding_model=self.config.embedding_model,
+            )
+            if ann_status.get("ready"):
+                return "default"
+            return "lite"
         return self.config.retrieval_mode
 
     def _semantic_search(
@@ -286,10 +304,12 @@ class BreathingMemoryEngine:
         query: str,
         result_count: int,
         *,
+        retrieval_mode: str,
+        search_effort: int,
         include_diagnostics: bool = False,
     ) -> dict:
         if self.embedding_backend is None:
-            raise RuntimeError("retrieval mode 'lite' requires an embedding backend")
+            raise RuntimeError(f"retrieval mode '{retrieval_mode}' requires an embedding backend")
         fragments = self.store.list_fragments()
         if not fragments:
             return {"items": [], "count": 0}
@@ -300,13 +320,38 @@ class BreathingMemoryEngine:
             return {"items": [], "count": 0}
 
         query_vector = self.embedding_backend.embed_texts([query])[0]
+        if retrieval_mode == "default":
+            semantic_candidates = self._default_semantic_candidates(
+                embedded_fragments=embedded_fragments,
+                query_vector=query_vector,
+                result_count=result_count,
+                search_effort=search_effort,
+            )
+        else:
+            semantic_candidates = self._lite_semantic_candidates(
+                embedded_fragments=embedded_fragments,
+                query_vector=query_vector,
+                result_count=result_count,
+            )
+        return self._rerank_semantic_candidates(
+            semantic_candidates=semantic_candidates,
+            retrieval_mode=retrieval_mode,
+            include_diagnostics=include_diagnostics,
+        )
+
+    def _lite_semantic_candidates(
+        self,
+        *,
+        embedded_fragments: list[Fragment],
+        query_vector: list[float],
+        result_count: int,
+    ) -> list[tuple[Fragment, float]]:
         semantic_candidates: list[tuple[Fragment, float]] = []
         for fragment in embedded_fragments:
             assert fragment.embedding_vector is not None
             similarity = cosine_similarity(query_vector, unpack_embedding(fragment.embedding_vector))
             semantic_similarity = (similarity + 1.0) / 2.0
             semantic_candidates.append((fragment, semantic_similarity))
-
         semantic_candidates.sort(
             key=lambda item: (
                 -item[1],
@@ -314,7 +359,49 @@ class BreathingMemoryEngine:
                 item[0].id,
             )
         )
-        semantic_candidates = semantic_candidates[:result_count]
+        return semantic_candidates[:result_count]
+
+    def _default_semantic_candidates(
+        self,
+        *,
+        embedded_fragments: list[Fragment],
+        query_vector: list[float],
+        result_count: int,
+        search_effort: int,
+    ) -> list[tuple[Fragment, float]]:
+        if not self.ann_index.support_available():
+            raise RuntimeError("retrieval mode 'default' requires HNSW index support")
+        vectors_by_fragment_id = {
+            fragment.id: unpack_embedding(fragment.embedding_vector)
+            for fragment in embedded_fragments
+            if fragment.embedding_vector is not None
+        }
+        self.ann_index.ensure_ready(
+            vectors_by_fragment_id=vectors_by_fragment_id,
+            embedding_model=self.config.embedding_model,
+        )
+        fragments_by_id = {fragment.id: fragment for fragment in embedded_fragments}
+        semantic_candidates: list[tuple[Fragment, float]] = []
+        for fragment_id in self.ann_index.query(
+            vector=query_vector,
+            limit=result_count,
+            search_effort=search_effort,
+        ):
+            fragment = fragments_by_id.get(fragment_id)
+            if fragment is None or fragment.embedding_vector is None:
+                continue
+            similarity = cosine_similarity(query_vector, unpack_embedding(fragment.embedding_vector))
+            semantic_similarity = (similarity + 1.0) / 2.0
+            semantic_candidates.append((fragment, semantic_similarity))
+        return semantic_candidates
+
+    def _rerank_semantic_candidates(
+        self,
+        *,
+        semantic_candidates: list[tuple[Fragment, float]],
+        retrieval_mode: str,
+        include_diagnostics: bool,
+    ) -> dict:
         normalized_priorities = self._normalize_search_priorities(
             [self._search_priority(fragment.id) for fragment, _ in semantic_candidates]
         )
@@ -334,7 +421,7 @@ class BreathingMemoryEngine:
             self._serialize_search_item(
                 fragment,
                 diagnostics={
-                    "retrieval_mode": "lite",
+                    "retrieval_mode": retrieval_mode,
                     "semantic_similarity": similarity,
                     "normalized_priority": normalized_priority,
                     "ranking_score": final_score,
@@ -418,6 +505,7 @@ class BreathingMemoryEngine:
         vectors = self.embedding_backend.embed_texts([fragment.content for fragment in missing])
         for fragment, vector in zip(missing, vectors):
             self.store.update_fragment_embedding(fragment.id, pack_embedding(vector))
+        self._rebuild_ann_index()
 
     def _normalize_search_priorities(self, priorities: list[float]) -> list[float]:
         if not priorities:
@@ -550,6 +638,7 @@ class BreathingMemoryEngine:
         self.store.copy_feedback(candidate.id, child_id)
         self.store.create_reference(from_anchor_id=candidate.anchor_id, fragment_id=child_id)
         self.store.update_fragment_layer(candidate.id, "holding")
+        self._sync_ann_index_for_new_fragment(child_id)
         counters["compress"] += 1
         return True
 
@@ -558,8 +647,54 @@ class BreathingMemoryEngine:
         if candidate is None:
             return False
         self.store.delete_fragment(candidate.id)
+        self._remove_from_ann_index(candidate.id)
         counters["delete"] += 1
         return True
+
+    def _sync_ann_index_for_new_fragment(self, fragment_id: int) -> None:
+        if self.embedding_backend is None or not self.ann_index.support_available():
+            return
+        fragment = self.store.get_fragment(fragment_id)
+        if fragment is None or fragment.embedding_vector is None:
+            return
+        fragments = self.store.list_fragments()
+        status = self.ann_index.inspect(
+            fragment_ids=[item.id for item in fragments if item.id != fragment_id],
+            embedding_model=self.config.embedding_model,
+        )
+        if not status.get("ready"):
+            self._rebuild_ann_index(fragments)
+            return
+        try:
+            self.ann_index.append(
+                fragment_id=fragment.id,
+                vector=unpack_embedding(fragment.embedding_vector),
+                embedding_model=self.config.embedding_model,
+            )
+        except Exception:
+            self._rebuild_ann_index(fragments)
+
+    def _remove_from_ann_index(self, fragment_id: int) -> None:
+        if self.embedding_backend is None or not self.ann_index.support_available():
+            return
+        try:
+            self.ann_index.remove(fragment_id)
+        except Exception:
+            self._rebuild_ann_index()
+
+    def _rebuild_ann_index(self, fragments: Optional[list[Fragment]] = None) -> None:
+        if self.embedding_backend is None or not self.ann_index.support_available():
+            return
+        current_fragments = self.store.list_fragments() if fragments is None else fragments
+        vectors_by_fragment_id = {
+            fragment.id: unpack_embedding(fragment.embedding_vector)
+            for fragment in current_fragments
+            if fragment.embedding_vector is not None
+        }
+        self.ann_index.rebuild(
+            vectors_by_fragment_id=vectors_by_fragment_id,
+            embedding_model=self.config.embedding_model,
+        )
 
     def _select_compression_candidate(self, protected_fragment_ids: set[int]) -> Optional[Fragment]:
         fragments = [

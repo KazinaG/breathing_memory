@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 
+from breathing_memory.cli import resolve_codex_registration_binding
 from breathing_memory.runtime import build_project_key, resolve_db_path, resolve_project_identity
 
 
@@ -91,6 +92,19 @@ class RuntimeResolutionTests(unittest.TestCase):
         key = build_project_key("git_root", str((self.root / "My Project").resolve()))
 
         self.assertRegex(key, r"^my-project-[0-9a-f]{12}$")
+
+    def test_codex_registration_binding_keeps_db_path_stable_across_cwds(self) -> None:
+        repo = self.root / "repo"
+        elsewhere = self.root / "elsewhere"
+        repo.mkdir()
+        elsewhere.mkdir()
+        self._init_git_repo(repo)
+
+        binding = resolve_codex_registration_binding(cwd=repo, env={})
+        first_path = resolve_db_path(cwd=repo, env=binding["env"], app_data_root=self.app_data_root)
+        second_path = resolve_db_path(cwd=elsewhere, env=binding["env"], app_data_root=self.app_data_root)
+
+        self.assertEqual(first_path, second_path)
 
     def _init_git_repo(self, root: Path) -> None:
         completed = subprocess.run(

@@ -50,4 +50,4 @@ Retrieval ranking is only a prediction about what should matter. A concrete fina
 
 ### Why semantic retrieval uses a pluggable embedding backend
 
-Embedding generation is intentionally separated from storage, indexing, and reranking. This keeps the backend boundary narrow, allows model replacement, and prevents the public retrieval API from depending on one mandatory provider.
+Embedding generation is intentionally separated from storage, indexing, and reranking. This keeps the backend boundary narrow and prevents the public retrieval API from depending on storage or indexing details. The current implementation ships with a single default sentence-transformers model; model replacement remains an internal implementation concern rather than a public multi-provider feature.

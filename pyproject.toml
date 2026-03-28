@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "breathing-memory"
-version = "0.3.0"
+version = "0.4.0"
 description = "Local Codex memory manager with an official Python SDK-based MCP server."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,7 +24,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-semantic = ["sentence-transformers>=3,<4"]
+semantic = ["sentence-transformers>=3,<4", "hnswlib>=0.8,<1"]
 
 [project.urls]
 Homepage = "https://github.com/KazinaG/breathing_memory"

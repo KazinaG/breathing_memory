@@ -7,9 +7,81 @@ import unittest
 
 from breathing_memory.compression import StubCompressionBackend
 from breathing_memory.config import MemoryConfig
-from breathing_memory.embeddings import StubEmbeddingBackend
+from breathing_memory.embeddings import StubEmbeddingBackend, cosine_similarity
 from breathing_memory.engine import BreathingMemoryEngine
 from breathing_memory.store import SQLiteStore
+
+
+class StubAnnIndex:
+    def __init__(self, support: bool = True):
+        self.support = support
+        self.embedding_model: str | None = None
+        self.vectors_by_fragment_id: dict[int, list[float]] = {}
+        self.force_reason: str | None = None
+
+    def support_available(self) -> bool:
+        return self.support
+
+    def inspect(self, *, fragment_ids, embedding_model):
+        fragment_id_list = sorted(set(int(fragment_id) for fragment_id in fragment_ids))
+        if not self.support:
+            return self._status(False, "unavailable", "hnsw_support_unavailable", fragment_id_list)
+        if self.force_reason is not None:
+            return self._status(False, "rebuild_required", self.force_reason, fragment_id_list)
+        if not fragment_id_list:
+            return self._status(False, "build_required", "empty_corpus", fragment_id_list)
+        if self.embedding_model != embedding_model:
+            if not self.vectors_by_fragment_id:
+                return self._status(False, "build_required", "missing_index_files", fragment_id_list)
+            return self._status(False, "rebuild_required", "embedding_model_mismatch", fragment_id_list)
+        if sorted(self.vectors_by_fragment_id) != fragment_id_list:
+            reason = "missing_index_files" if not self.vectors_by_fragment_id else "fragment_set_mismatch"
+            status = "build_required" if not self.vectors_by_fragment_id else "rebuild_required"
+            return self._status(False, status, reason, fragment_id_list)
+        return self._status(True, "ready", "healthy_index", fragment_id_list)
+
+    def ensure_ready(self, *, vectors_by_fragment_id, embedding_model):
+        status = self.inspect(fragment_ids=vectors_by_fragment_id.keys(), embedding_model=embedding_model)
+        if status["ready"]:
+            return status
+        self.rebuild(vectors_by_fragment_id=vectors_by_fragment_id, embedding_model=embedding_model)
+        return self.inspect(fragment_ids=vectors_by_fragment_id.keys(), embedding_model=embedding_model)
+
+    def rebuild(self, *, vectors_by_fragment_id, embedding_model):
+        self.embedding_model = embedding_model
+        self.vectors_by_fragment_id = {
+            int(fragment_id): list(map(float, vector))
+            for fragment_id, vector in vectors_by_fragment_id.items()
+        }
+        self.force_reason = None
+
+    def append(self, *, fragment_id, vector, embedding_model):
+        if not self.support:
+            raise RuntimeError("HNSW support unavailable")
+        self.embedding_model = embedding_model
+        self.vectors_by_fragment_id[int(fragment_id)] = list(map(float, vector))
+
+    def remove(self, fragment_id):
+        self.vectors_by_fragment_id.pop(int(fragment_id), None)
+
+    def query(self, *, vector, limit, search_effort):
+        del search_effort
+        candidates = sorted(
+            self.vectors_by_fragment_id.items(),
+            key=lambda item: (-((cosine_similarity(vector, item[1]) + 1.0) / 2.0), item[0]),
+        )
+        return [fragment_id for fragment_id, _ in candidates[:limit]]
+
+    def _status(self, ready: bool, status: str, reason: str, fragment_ids: list[int]) -> dict:
+        return {
+            "support_available": self.support,
+            "ready": ready,
+            "status": status,
+            "reason": reason,
+            "index_path": "/tmp/stub.hnsw.bin",
+            "metadata_path": "/tmp/stub.hnsw.json",
+            "fragment_count": len(fragment_ids),
+        }
 
 
 def make_engine(
@@ -17,16 +89,20 @@ def make_engine(
     total_capacity: int = 160,
     retrieval_mode: str = "super_lite",
     embedding_backend: StubEmbeddingBackend | None = None,
+    ann_index: StubAnnIndex | None = None,
+    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
 ) -> BreathingMemoryEngine:
     config = MemoryConfig(
         db_path=root / "memory.sqlite3",
         total_capacity_mb=total_capacity / (1024 * 1024),
         retrieval_mode=retrieval_mode,
+        embedding_model=embedding_model,
     )
     return BreathingMemoryEngine(
         config=config,
         compression_backend=StubCompressionBackend(),
         embedding_backend=embedding_backend,
+        ann_index=ann_index,
     )
 
 
@@ -141,14 +217,39 @@ class EngineTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "requires an embedding backend"):
             self.engine.search("search")
 
-    def test_search_rejects_default_until_hnsw_exists(self) -> None:
+    def test_search_rejects_default_without_hnsw_support(self) -> None:
         backend = StubEmbeddingBackend({"search me": [1.0, 0.0], "search": [1.0, 0.0]})
         self.engine.close()
-        self.engine = make_engine(self.root / "default", retrieval_mode="default", embedding_backend=backend)
+        self.engine = make_engine(
+            self.root / "default-unavailable",
+            retrieval_mode="default",
+            embedding_backend=backend,
+            ann_index=StubAnnIndex(support=False),
+        )
         self.engine.remember(content="search me", actor="user")
 
-        with self.assertRaisesRegex(RuntimeError, "HNSW index"):
+        with self.assertRaisesRegex(RuntimeError, "HNSW index support"):
             self.engine.search("search")
+
+    def test_default_search_returns_results_when_hnsw_is_available(self) -> None:
+        backend = StubEmbeddingBackend(
+            {
+                "default winner": [0.8, 0.2],
+                "default query": [0.8, 0.2],
+            }
+        )
+        self.engine.close()
+        self.engine = make_engine(
+            self.root / "default-ready",
+            retrieval_mode="default",
+            embedding_backend=backend,
+            ann_index=StubAnnIndex(),
+        )
+        fragment = self.engine.remember(content="default winner", actor="user")
+
+        result = self.engine.search("default query", result_count=8, search_effort=32)
+
+        self.assertEqual(result["items"][0]["id"], fragment["id"])
 
     def test_lite_search_reranks_semantic_candidates_by_search_priority(self) -> None:
         backend = StubEmbeddingBackend(
@@ -195,6 +296,36 @@ class EngineTests(unittest.TestCase):
         self.assertIn("normalized_priority", diagnostics)
         self.assertIn("ranking_score", diagnostics)
 
+    def test_default_search_can_include_semantic_diagnostics(self) -> None:
+        backend = StubEmbeddingBackend(
+            {
+                "default winner": [0.8, 0.2],
+                "default query": [0.8, 0.2],
+            }
+        )
+        self.engine.close()
+        self.engine = make_engine(
+            self.root / "default-diag",
+            retrieval_mode="default",
+            embedding_backend=backend,
+            ann_index=StubAnnIndex(),
+        )
+        fragment = self.engine.remember(content="default winner", actor="user")
+
+        result = self.engine.search(
+            "default query",
+            result_count=8,
+            search_effort=32,
+            include_diagnostics=True,
+        )
+
+        self.assertEqual(result["items"][0]["id"], fragment["id"])
+        diagnostics = result["items"][0]["diagnostics"]
+        self.assertEqual(diagnostics["retrieval_mode"], "default")
+        self.assertIn("semantic_similarity", diagnostics)
+        self.assertIn("normalized_priority", diagnostics)
+        self.assertIn("ranking_score", diagnostics)
+
     def test_lexical_search_can_include_diagnostics(self) -> None:
         fragment = self.engine.remember(content="memory\nsearch ready", actor="user")
 
@@ -211,15 +342,38 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(diagnostics["lexical_rank"]["all_terms_present"])
         self.assertEqual(diagnostics["lexical_rank"]["matched_term_count"], 2)
 
-    def test_auto_mode_uses_lite_when_embedding_backend_exists(self) -> None:
+    def test_auto_mode_uses_default_when_hnsw_is_ready(self) -> None:
         backend = StubEmbeddingBackend({"alpha semantic": [1.0, 0.0], "alpha": [1.0, 0.0]})
         self.engine.close()
-        self.engine = make_engine(self.root / "auto", retrieval_mode="auto", embedding_backend=backend)
+        self.engine = make_engine(
+            self.root / "auto-default",
+            retrieval_mode="auto",
+            embedding_backend=backend,
+            ann_index=StubAnnIndex(),
+        )
         fragment = self.engine.remember(content="alpha semantic", actor="user")
 
         result = self.engine.search("alpha", result_count=8, search_effort=32)
 
         self.assertEqual(result["items"][0]["id"], fragment["id"])
+        self.assertEqual(self.engine._resolve_retrieval_mode(), "default")
+
+    def test_auto_mode_falls_back_to_lite_when_hnsw_is_unavailable(self) -> None:
+        backend = StubEmbeddingBackend({"alpha semantic": [1.0, 0.0], "alpha": [1.0, 0.0]})
+        self.engine.close()
+        self.engine = make_engine(
+            self.root / "auto-lite",
+            retrieval_mode="auto",
+            embedding_backend=backend,
+            ann_index=StubAnnIndex(support=False),
+        )
+        fragment = self.engine.remember(content="alpha semantic", actor="user")
+
+        result = self.engine.search("alpha", result_count=8, search_effort=32, include_diagnostics=True)
+
+        self.assertEqual(result["items"][0]["id"], fragment["id"])
+        self.assertEqual(self.engine._resolve_retrieval_mode(), "lite")
+        self.assertEqual(result["items"][0]["diagnostics"]["retrieval_mode"], "lite")
 
     def test_lite_search_backfills_missing_embeddings(self) -> None:
         backend = StubEmbeddingBackend({"needs embedding": [1.0, 0.0], "needs": [1.0, 0.0]})
@@ -235,6 +389,61 @@ class EngineTests(unittest.TestCase):
         assert stored is not None
         self.assertIsNotNone(stored.embedding_vector)
         self.assertEqual(result["items"][0]["id"], fragment["id"])
+
+    def test_default_search_rebuilds_when_index_is_marked_invalid(self) -> None:
+        backend = StubEmbeddingBackend(
+            {
+                "semantic winner": [0.8, 0.2],
+                "semantic query": [0.8, 0.2],
+            }
+        )
+        ann_index = StubAnnIndex()
+        self.engine.close()
+        self.engine = make_engine(
+            self.root / "default-rebuild",
+            retrieval_mode="default",
+            embedding_backend=backend,
+            ann_index=ann_index,
+        )
+        fragment = self.engine.remember(content="semantic winner", actor="user")
+        ann_index.force_reason = "invalid_metadata"
+
+        result = self.engine.search("semantic query", result_count=8, search_effort=32)
+
+        self.assertEqual(result["items"][0]["id"], fragment["id"])
+        self.assertIsNone(ann_index.force_reason)
+
+    def test_default_search_rebuilds_when_embedding_model_changes(self) -> None:
+        backend = StubEmbeddingBackend(
+            {
+                "semantic winner": [0.8, 0.2],
+                "semantic query": [0.8, 0.2],
+            }
+        )
+        ann_index = StubAnnIndex()
+        self.engine.close()
+        self.engine = make_engine(
+            self.root / "default-model-a",
+            retrieval_mode="default",
+            embedding_backend=backend,
+            ann_index=ann_index,
+            embedding_model="model-a",
+        )
+        fragment = self.engine.remember(content="semantic winner", actor="user")
+
+        self.engine.close()
+        self.engine = make_engine(
+            self.root / "default-model-a",
+            retrieval_mode="default",
+            embedding_backend=backend,
+            ann_index=ann_index,
+            embedding_model="model-b",
+        )
+
+        result = self.engine.search("semantic query", result_count=8, search_effort=32)
+
+        self.assertEqual(result["items"][0]["id"], fragment["id"])
+        self.assertEqual(ann_index.embedding_model, "model-b")
 
     def test_search_normalizes_symbols_and_whitespace(self) -> None:
         fragment = self.engine.remember(content="`public/` 側には\nまだ残っています。", actor="user")
@@ -404,6 +613,29 @@ class EngineTests(unittest.TestCase):
         self.assertIsNotNone(candidate)
         assert candidate is not None
         self.assertEqual(candidate.id, second["id"])
+
+    def test_delete_once_removes_fragment_from_hnsw_index(self) -> None:
+        backend = StubEmbeddingBackend({"first": [1.0, 0.0], "second": [0.0, 1.0]})
+        ann_index = StubAnnIndex()
+        self.engine.close()
+        self.engine = make_engine(
+            self.root / "delete-index",
+            retrieval_mode="default",
+            embedding_backend=backend,
+            ann_index=ann_index,
+        )
+
+        first = self.engine.remember(content="first", actor="user")
+        second = self.engine.remember(content="second", actor="user")
+        self.engine.store.update_fragment_layer(first["id"], "holding")
+        self.engine.store.update_fragment_layer(second["id"], "holding")
+
+        deleted = self.engine._select_delete_candidate(set())
+        self.assertIsNotNone(deleted)
+        assert deleted is not None
+        self.engine._delete_once({"compress": 0, "delete": 0}, set())
+
+        self.assertNotIn(deleted.id, ann_index.vectors_by_fragment_id)
 
     def test_dynamic_layer_ratio_uses_recent_sequence_metrics(self) -> None:
         up_engine = make_engine(self.root / "ratio-up")

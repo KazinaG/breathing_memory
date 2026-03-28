@@ -54,7 +54,7 @@ breathing-memory doctor
 In container-like environments, `doctor` also warns when the default app-data root does not appear to be a dedicated mount, because memory may not survive container rebuilds in that setup.
 If `breathing-memory[semantic]` is installed, `doctor` will show that `auto` resolves to `lite`; otherwise it will show that `auto` resolves to `super_lite`.
 
-`breathing-memory install-codex` registers the user-scoped MCP entry named `breathing-memory` and creates or updates the managed Breathing Memory block in the current repository's `AGENTS.md`.
+`breathing-memory install-codex` registers the user-scoped MCP entry named `breathing-memory`, pins that Codex registration to a stable project identity for the current repository, and creates or updates the managed Breathing Memory block in the current repository's `AGENTS.md`.
 After a successful run, it also performs a lightweight registration post-check and prints the active project identity, the resolved DB path, the effective retrieval mode, and the next verification step.
 
 Semantic quick check:
@@ -67,12 +67,13 @@ breathing-memory doctor
 After that, `doctor` should report:
 
 - `configured_mode: auto`
-- `effective_mode: lite`
+- `effective_mode: lite` or `effective_mode: default`
 - `semantic_extra_available: true`
 
 Registration notes:
 
 - the command is idempotent when the existing registration already matches `breathing-memory serve`
+- the command stores a stable `BREATHING_MEMORY_PROJECT_ID` in the Codex MCP registration unless you explicitly override it with `BREATHING_MEMORY_PROJECT_ID` or `BREATHING_MEMORY_DB_PATH`
 - if a different registration already exists under the same name, the command fails and tells you to remove it with `codex mcp remove breathing-memory`
 - if `codex` is not on `PATH`, the command exits clearly instead of writing partial state
 - if `AGENTS.md` cannot be created or safely updated, the command fails instead of leaving repo-side workflow in a partial state
@@ -117,11 +118,17 @@ Each identity is mapped to a stable project key, and the SQLite file lives at:
 
 This keeps memory out of the consuming repository while preventing unrelated repositories from sharing the same database by default.
 
+For Codex installs, `install-codex` pins the MCP registration to a stable project identity derived from the current repository at install time. That means the live MCP server no longer depends on VSCode or Codex internal working directories when choosing its DB path.
+
 The exact active path is easiest to inspect through:
 
 ```bash
 breathing-memory doctor
 ```
+
+When a pinned Codex registration exists, `doctor` uses that registration-derived project identity as its primary diagnostic target. If no Codex registration exists, `doctor` falls back to its own current working directory as before.
+
+If you want to keep memory from an older unpinned Codex registration, move the existing `memory.sqlite3` manually into the new pinned location. Breathing Memory intentionally does not auto-migrate or auto-merge databases.
 
 ## Environment Variables
 
@@ -134,11 +141,12 @@ User-facing settings such as total capacity live in `MemoryConfig` in [config.py
 
 ## MCP Tool Surface
 
-Breathing Memory currently exposes five MCP tools:
+Breathing Memory currently exposes six MCP tools:
 
 - `memory_remember`
 - `memory_search`
 - `memory_fetch`
+- `memory_recent`
 - `memory_feedback`
 - `memory_stats`
 
@@ -188,7 +196,13 @@ If the optional semantic extra is installed:
 pip install 'breathing-memory[semantic]'
 ```
 
-then runtime `auto` resolves to `lite`, which performs direct embedding retrieval without ANN. HNSW-backed `default` mode is still reserved for a later slice.
+then runtime `auto` can resolve to:
+
+- `default` when the embedding backend and a healthy HNSW index are available
+- `lite` when embeddings are available but the HNSW index is missing, invalid, or rebuilding
+- `super_lite` when semantic retrieval is unavailable
+
+`breathing-memory doctor` reports the configured retrieval mode, the effective runtime mode, and whether the HNSW index is ready.
 
 ### `memory_fetch`
 

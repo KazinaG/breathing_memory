@@ -16,6 +16,7 @@ from breathing_memory.cli import (
     install_codex_registration,
     main,
     render_agents_block,
+    resolve_codex_registration_binding,
     resolve_agents_guidance_mode,
 )
 from breathing_memory.config import MemoryConfig
@@ -34,9 +35,27 @@ class FakeRunner:
         return self.responses.pop(0)
 
 
+def registration_stdout(env: dict[str, str] | None) -> str:
+    return json.dumps(
+        {
+            "transport": {
+                "type": "stdio",
+                "command": "breathing-memory",
+                "args": ["serve"],
+                "env": env,
+                "env_vars": [],
+                "cwd": None,
+            }
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
 class CodexInstallTests(unittest.TestCase):
     def test_install_codex_registers_expected_command(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
+            binding = resolve_codex_registration_binding(cwd=Path(tempdir), env={"PATH": "/usr/bin"})
             runner = FakeRunner(
                 [
                     subprocess.CompletedProcess(
@@ -54,10 +73,7 @@ class CodexInstallTests(unittest.TestCase):
                     subprocess.CompletedProcess(
                         ["codex", "mcp", "get", "breathing-memory", "--json"],
                         0,
-                        (
-                            '{"transport":{"type":"stdio","command":"breathing-memory","args":["serve"],'
-                            '"env":null,"env_vars":[],"cwd":null}}'
-                        ),
+                        registration_stdout(binding["env"]),
                         "",
                     ),
                 ]
@@ -76,7 +92,17 @@ class CodexInstallTests(unittest.TestCase):
             self.assertIn("breathing-memory doctor", message)
             self.assertEqual(
                 runner.calls[1][0],
-                ["codex", "mcp", "add", "breathing-memory", "--", "breathing-memory", "serve"],
+                [
+                    "codex",
+                    "mcp",
+                    "add",
+                    "breathing-memory",
+                    "--env",
+                    f"BREATHING_MEMORY_PROJECT_ID={binding['env']['BREATHING_MEMORY_PROJECT_ID']}",
+                    "--",
+                    "breathing-memory",
+                    "serve",
+                ],
             )
             self.assertEqual(
                 runner.calls[2][0],
@@ -86,15 +112,13 @@ class CodexInstallTests(unittest.TestCase):
 
     def test_existing_matching_registration_is_success(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
+            binding = resolve_codex_registration_binding(cwd=Path(tempdir), env={"PATH": "/usr/bin"})
             runner = FakeRunner(
                 [
                     subprocess.CompletedProcess(
                         ["codex", "mcp", "get", "breathing-memory", "--json"],
                         0,
-                        (
-                            '{"transport":{"type":"stdio","command":"breathing-memory","args":["serve"],'
-                            '"env":null,"env_vars":[],"cwd":null}}'
-                        ),
+                        registration_stdout(binding["env"]),
                         "",
                     )
                 ]
@@ -113,10 +137,7 @@ class CodexInstallTests(unittest.TestCase):
                     subprocess.CompletedProcess(
                         ["codex", "mcp", "get", "breathing-memory", "--json"],
                         0,
-                        (
-                            '{"transport":{"type":"stdio","command":"breathing-memory","args":["serve"],'
-                            '"env":null,"env_vars":[],"cwd":null}}'
-                        ),
+                        registration_stdout(binding["env"]),
                         "",
                     )
                 ]
@@ -161,6 +182,7 @@ class CodexInstallTests(unittest.TestCase):
     def test_existing_agents_file_keeps_external_content_and_updates_managed_block(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             agents_path = Path(tempdir) / "AGENTS.md"
+            binding = resolve_codex_registration_binding(cwd=Path(tempdir), env={"PATH": "/usr/bin"})
             agents_path.write_text(
                 "# AGENTS\n\nKeep this note.\n\n<!-- BEGIN BREATHING MEMORY -->\nold block\n<!-- END BREATHING MEMORY -->\n",
                 encoding="utf-8",
@@ -170,10 +192,7 @@ class CodexInstallTests(unittest.TestCase):
                     subprocess.CompletedProcess(
                         ["codex", "mcp", "get", "breathing-memory", "--json"],
                         0,
-                        (
-                            '{"transport":{"type":"stdio","command":"breathing-memory","args":["serve"],'
-                            '"env":null,"env_vars":[],"cwd":null}}'
-                        ),
+                        registration_stdout(binding["env"]),
                         "",
                     )
                 ]
@@ -202,6 +221,115 @@ class CodexInstallTests(unittest.TestCase):
         self.assertIn("### Feedback Attribution", block)
         self.assertIn("skip `memory_feedback` rather than guessing.", block)
         self.assertNotIn("Choose a query optimized for semantic retrieval.", block)
+
+    def test_install_codex_uses_explicit_project_id_when_provided(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            explicit_env = {"PATH": "/usr/bin", "BREATHING_MEMORY_PROJECT_ID": "shared-memory"}
+            runner = FakeRunner(
+                [
+                    subprocess.CompletedProcess(
+                        ["codex", "mcp", "get", "breathing-memory", "--json"],
+                        1,
+                        "",
+                        "Error: No MCP server named 'breathing-memory' found.",
+                    ),
+                    subprocess.CompletedProcess(
+                        [
+                            "codex",
+                            "mcp",
+                            "add",
+                            "breathing-memory",
+                            "--env",
+                            "BREATHING_MEMORY_PROJECT_ID=shared-memory",
+                            "--",
+                            "breathing-memory",
+                            "serve",
+                        ],
+                        0,
+                        "",
+                        "",
+                    ),
+                    subprocess.CompletedProcess(
+                        ["codex", "mcp", "get", "breathing-memory", "--json"],
+                        0,
+                        registration_stdout({"BREATHING_MEMORY_PROJECT_ID": "shared-memory"}),
+                        "",
+                    ),
+                ]
+            )
+
+            with patch("breathing_memory.cli.shutil.which", return_value="/usr/bin/codex"):
+                install_codex_registration(runner=runner, env=explicit_env, cwd=Path(tempdir))
+
+            self.assertEqual(
+                runner.calls[1][0],
+                [
+                    "codex",
+                    "mcp",
+                    "add",
+                    "breathing-memory",
+                    "--env",
+                    "BREATHING_MEMORY_PROJECT_ID=shared-memory",
+                    "--",
+                    "breathing-memory",
+                    "serve",
+                ],
+            )
+
+    def test_install_codex_uses_explicit_db_path_when_provided(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "custom.sqlite3"
+            explicit_env = {"PATH": "/usr/bin", "BREATHING_MEMORY_DB_PATH": str(db_path)}
+            runner = FakeRunner(
+                [
+                    subprocess.CompletedProcess(
+                        ["codex", "mcp", "get", "breathing-memory", "--json"],
+                        1,
+                        "",
+                        "Error: No MCP server named 'breathing-memory' found.",
+                    ),
+                    subprocess.CompletedProcess(
+                        [
+                            "codex",
+                            "mcp",
+                            "add",
+                            "breathing-memory",
+                            "--env",
+                            f"BREATHING_MEMORY_DB_PATH={db_path}",
+                            "--",
+                            "breathing-memory",
+                            "serve",
+                        ],
+                        0,
+                        "",
+                        "",
+                    ),
+                    subprocess.CompletedProcess(
+                        ["codex", "mcp", "get", "breathing-memory", "--json"],
+                        0,
+                        registration_stdout({"BREATHING_MEMORY_DB_PATH": str(db_path)}),
+                        "",
+                    ),
+                ]
+            )
+
+            with patch("breathing_memory.cli.shutil.which", return_value="/usr/bin/codex"):
+                install_codex_registration(runner=runner, env=explicit_env, cwd=Path(tempdir))
+
+            self.assertEqual(
+                runner.calls[1][0],
+                [
+                    "codex",
+                    "mcp",
+                    "add",
+                    "breathing-memory",
+                    "--env",
+                    f"BREATHING_MEMORY_DB_PATH={db_path}",
+                    "--",
+                    "breathing-memory",
+                    "serve",
+                ],
+            )
 
     def test_resolve_agents_guidance_mode_prefers_semantic_when_available_in_auto(self) -> None:
         self.assertEqual(resolve_agents_guidance_mode(retrieval_mode="auto", semantic_available=True), "semantic")
@@ -316,15 +444,13 @@ class CodexInstallTests(unittest.TestCase):
 
     def test_doctor_reports_matching_codex_registration(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
+            binding = resolve_codex_registration_binding(cwd=Path(tempdir), env={"PATH": "/usr/bin"})
             runner = FakeRunner(
                 [
                     subprocess.CompletedProcess(
                         ["codex", "mcp", "get", "breathing-memory", "--json"],
                         0,
-                        (
-                            '{"transport":{"type":"stdio","command":"breathing-memory","args":["serve"],'
-                            '"env":null,"env_vars":[],"cwd":null}}'
-                        ),
+                        registration_stdout(binding["env"]),
                         "",
                     )
                 ]
@@ -343,12 +469,48 @@ class CodexInstallTests(unittest.TestCase):
 
         self.assertEqual(report["codex_registration"]["status"], "configured")
         self.assertTrue(report["codex_registration"]["matches_expected"])
+        self.assertEqual(report["diagnostic_context"], "codex_registration")
         self.assertEqual(
             report["next_steps"],
             [
+                "Codex registration is pinned to a stable project identity.",
                 "Open this repository in Codex and start a conversation to create the project DB.",
-                "Optional: install `breathing-memory[semantic]` to enable `lite` semantic retrieval.",
+                "Optional: install `breathing-memory[semantic]` to enable semantic retrieval.",
             ],
+        )
+
+    def test_doctor_reports_legacy_unpinned_registration(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            runner = FakeRunner(
+                [
+                    subprocess.CompletedProcess(
+                        ["codex", "mcp", "get", "breathing-memory", "--json"],
+                        0,
+                        registration_stdout(None),
+                        "",
+                    )
+                ]
+            )
+
+            with patch("breathing_memory.cli.shutil.which", side_effect=lambda name, path=None: "/usr/bin/codex" if name == "codex" else "/usr/bin/breathing-memory"):
+                with patch("breathing_memory.cli.semantic_extra_available", return_value=False):
+                    report = json.loads(
+                        doctor(
+                            json_output=True,
+                            runner=runner,
+                            env={"PATH": "/usr/bin"},
+                            cwd=Path(tempdir),
+                        )
+                    )
+
+        self.assertEqual(report["codex_registration"]["status"], "conflict")
+        self.assertEqual(report["codex_registration"]["reason"], "legacy_unpinned_registration")
+        self.assertEqual(report["diagnostic_context"], "working_directory")
+        self.assertTrue(report["warnings"])
+        self.assertIn("legacy unpinned format", report["warnings"][0])
+        self.assertEqual(
+            report["next_steps"][0],
+            "Rerun `breathing-memory install-codex` to migrate Codex registration to a stable project identity.",
         )
 
     def test_doctor_warns_when_container_app_data_is_not_mounted(self) -> None:
@@ -366,19 +528,61 @@ class CodexInstallTests(unittest.TestCase):
         self.assertTrue(report["warnings"])
         self.assertIn("Memory may not survive container rebuilds", report["warnings"][0])
 
-    def test_doctor_reports_semantic_runtime_when_available(self) -> None:
+    def test_doctor_reports_semantic_runtime_when_hnsw_is_not_ready(self) -> None:
         with patch("breathing_memory.cli.semantic_extra_available", return_value=True):
-            report = json.loads(
-                doctor(
-                    json_output=True,
-                    env={"PATH": ""},
-                    cwd=Path("/workspace"),
+            with patch(
+                "breathing_memory.cli.inspect_hnsw_status",
+                return_value={
+                    "support_available": True,
+                    "ready": False,
+                    "status": "build_required",
+                    "reason": "missing_index_files",
+                    "index_path": "/tmp/memory.sqlite3.hnsw.bin",
+                    "metadata_path": "/tmp/memory.sqlite3.hnsw.json",
+                },
+            ):
+                report = json.loads(
+                    doctor(
+                        json_output=True,
+                        env={"PATH": ""},
+                        cwd=Path("/workspace"),
+                    )
                 )
-            )
 
         self.assertTrue(report["retrieval"]["semantic_extra_available"])
+        self.assertTrue(report["retrieval"]["hnsw_support_available"])
+        self.assertFalse(report["retrieval"]["hnsw_index_ready"])
         self.assertEqual(report["retrieval"]["effective_mode"], "lite")
-        self.assertEqual(report["retrieval"]["resolution_reason"], "auto_with_semantic_backend")
+        self.assertEqual(report["retrieval"]["resolution_reason"], "auto_hnsw_build_required")
+        self.assertEqual(
+            report["retrieval"]["embedding_model"],
+            MemoryConfig().embedding_model,
+        )
+
+    def test_doctor_reports_default_runtime_when_hnsw_is_ready(self) -> None:
+        with patch("breathing_memory.cli.semantic_extra_available", return_value=True):
+            with patch(
+                "breathing_memory.cli.inspect_hnsw_status",
+                return_value={
+                    "support_available": True,
+                    "ready": True,
+                    "status": "ready",
+                    "reason": "healthy_index",
+                    "index_path": "/tmp/memory.sqlite3.hnsw.bin",
+                    "metadata_path": "/tmp/memory.sqlite3.hnsw.json",
+                },
+            ):
+                report = json.loads(
+                    doctor(
+                        json_output=True,
+                        env={"PATH": ""},
+                        cwd=Path("/workspace"),
+                    )
+                )
+
+        self.assertTrue(report["retrieval"]["semantic_extra_available"])
+        self.assertEqual(report["retrieval"]["effective_mode"], "default")
+        self.assertEqual(report["retrieval"]["resolution_reason"], "auto_with_hnsw_ready")
         self.assertEqual(
             report["retrieval"]["embedding_model"],
             MemoryConfig().embedding_model,

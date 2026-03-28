@@ -54,7 +54,7 @@ Forgetting:
 Retrieval:
 
 - project-wide search spans the whole project even when a fragment originated inside one conversation
-- semantic retrieval is designed around a pluggable embedding backend rather than a hard-coded provider
+- semantic retrieval uses the configured embedding backend behind a narrow internal boundary
 - query generation remains on the MCP-calling agent side; Breathing Memory receives the query and performs retrieval
 - retrieval queries stay in the user's language and avoid unnecessary translation or paraphrase
 - retrieval-time ranking predicts which fragments matter
@@ -377,6 +377,8 @@ Mode-specific retrieval:
 HNSW lifecycle:
 
 - the HNSW index lives outside SQLite as a separate index file
+- the runtime may build or rebuild the index lazily when `default` retrieval is used and the current index is missing or invalid
+- the runtime updates the index incrementally for straightforward inserts and deletions when that is cheaper than a full rebuild
 - when a fragment is physically purged, its index entry is physically removed when the index implementation supports that cleanly
 - when clean physical removal is not supported, the index marks the entry deleted and removes it on the next rebuild
 - when the embedding provider changes, all live fragments are re-embedded and the HNSW index is rebuilt from scratch
@@ -385,13 +387,8 @@ HNSW lifecycle:
 
 Current default stack:
 
-- the default embedding model class is small multilingual sentence embedding
+- the default embedding model is `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
 - default HNSW parameters are `M = 16`, `efConstruction = 128`, `efSearch = 64`
-
-Pre-release evaluation:
-
-- the first embedding model to try is `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
-- the pre-release comparison candidate is `intfloat/multilingual-e5-small`
 
 Public API floor:
 

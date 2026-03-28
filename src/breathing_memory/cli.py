@@ -11,6 +11,7 @@ import subprocess
 import sys
 from typing import Any, Mapping, Sequence
 
+from .ann import HnswIndex
 from .agents_template import (
     AGENTS_BLOCK_END,
     AGENTS_BLOCK_START,
@@ -21,7 +22,15 @@ from .agents_template import (
 from .config import MemoryConfig
 from .engine import BreathingMemoryEngine
 from .mcp_server import serve_stdio_server
-from .runtime import DB_PATH_ENV_VAR, get_app_data_root, resolve_db_path, resolve_project_identity
+from .runtime import (
+    DB_PATH_ENV_VAR,
+    PROJECT_ID_ENV_VAR,
+    build_project_key,
+    get_app_data_root,
+    resolve_db_path,
+    resolve_project_identity,
+)
+from .store import SQLiteStore
 
 
 MCP_SERVER_NAME = "breathing-memory"
@@ -93,6 +102,10 @@ def install_codex_registration(
 ) -> str:
     command_env = dict(os.environ if env is None else env)
     working_directory = Path.cwd() if cwd is None else Path(cwd)
+    registration_binding = resolve_codex_registration_binding(cwd=working_directory, env=command_env)
+    registration_env = registration_binding["env"]
+    effective_env = dict(command_env)
+    effective_env.update(registration_env)
     agents_path = working_directory / AGENTS_FILENAME
     validate_agents_update_target(agents_path)
     current_agents = agents_path.read_text(encoding="utf-8") if agents_path.exists() else None
@@ -108,18 +121,22 @@ def install_codex_registration(
     registration_message: str
     post_check_message = ""
     if existing is not None:
-        if codex_registration_matches(existing):
+        if codex_registration_matches(existing, registration_env):
             registration_message = "Codex MCP server 'breathing-memory' is already configured."
         else:
             raise CLIError(
                 "Codex MCP server 'breathing-memory' already exists with a different configuration.\n"
-                f"Expected: {describe_expected_registration()}\n"
+                f"Expected: {describe_expected_registration(registration_env)}\n"
                 f"Found: {describe_registration(existing)}\n"
                 "Replace it with `codex mcp remove breathing-memory` and rerun `breathing-memory install-codex`."
             )
     else:
+        add_command = ["codex", "mcp", "add", MCP_SERVER_NAME]
+        for key, value in registration_env.items():
+            add_command.extend(["--env", f"{key}={value}"])
+        add_command.extend(["--", MCP_SERVER_COMMAND, *MCP_SERVER_ARGS])
         completed = runner(
-            ["codex", "mcp", "add", MCP_SERVER_NAME, "--", MCP_SERVER_COMMAND, *MCP_SERVER_ARGS],
+            add_command,
             capture_output=True,
             text=True,
             check=False,
@@ -132,6 +149,8 @@ def install_codex_registration(
             codex_path=shutil.which("codex", path=command_env.get("PATH")),
             runner=runner,
             env=command_env,
+            expected_env=registration_env,
+            working_directory=working_directory,
         )
         if post_check.get("status") != "configured":
             raise CLIError(
@@ -141,21 +160,24 @@ def install_codex_registration(
         post_check_message = "Post-check: Codex registration is configured."
 
     agents_message = write_agents_file(agents_path, current_agents, planned_agents)
-    identity_source, identity_value = resolve_project_identity(cwd=working_directory, env=command_env)
-    memory_config = MemoryConfig(db_path=resolve_db_path(cwd=working_directory, env=command_env))
+    identity_source, identity_value = resolve_project_identity(cwd=working_directory, env=effective_env)
+    memory_config = MemoryConfig(db_path=resolve_db_path(cwd=working_directory, env=effective_env))
     db_path = memory_config.db_path
     retrieval = inspect_semantic_status(memory_config)
+    identity_description = describe_binding_identity(registration_binding, identity_source, identity_value)
     post_check_block = f"{post_check_message}\n" if post_check_message else ""
     next_step_lines = [
         "Next steps:",
-        f"- Project identity: {identity_source} = {identity_value}",
+        f"- Project identity: {identity_description}",
         f"- DB path: {db_path}",
         f"- Effective retrieval mode: {retrieval['effective_mode']} ({retrieval['resolution_reason']})",
         "- Run `breathing-memory doctor` to verify the installation.",
         "- Open this repository in Codex and start using the registered MCP server.",
     ]
     if not retrieval["semantic_extra_available"]:
-        next_step_lines.append("- Optional: install `breathing-memory[semantic]` to enable `lite` semantic retrieval.")
+        next_step_lines.append("- Optional: install `breathing-memory[semantic]` to enable semantic retrieval.")
+    elif not retrieval["hnsw_index_ready"]:
+        next_step_lines.append("- Start or continue a conversation to build the HNSW index and enable `default` retrieval.")
     next_steps = "\n".join(next_step_lines)
     return f"{registration_message}\n{post_check_block}{agents_message}\n\n{next_steps}"
 
@@ -182,19 +204,27 @@ def doctor(
 ) -> str:
     command_env = dict(os.environ if env is None else env)
     working_directory = Path.cwd() if cwd is None else Path(cwd)
-    memory_config = MemoryConfig(db_path=resolve_db_path(cwd=working_directory, env=command_env))
-    identity_source, identity_value = resolve_project_identity(cwd=working_directory, env=command_env)
-    db_path = memory_config.db_path
     app_data_root = get_app_data_root()
     codex_path = shutil.which("codex", path=command_env.get("PATH"))
     environment = detect_runtime_environment(command_env)
     mount_checker = path_is_mount or (lambda path: path.is_mount())
+    expected_binding = resolve_codex_registration_binding(cwd=working_directory, env=command_env)
     registration_status = inspect_codex_registration_status(
         codex_path=codex_path,
         runner=runner,
         env=command_env,
+        expected_env=expected_binding["env"],
+        working_directory=working_directory,
     )
+    resolution_context, diagnostic_env = resolve_doctor_environment(
+        base_env=command_env,
+        registration_status=registration_status,
+    )
+    memory_config = MemoryConfig(db_path=resolve_db_path(cwd=working_directory, env=diagnostic_env))
+    identity_source, identity_value = resolve_project_identity(cwd=working_directory, env=diagnostic_env)
+    db_path = memory_config.db_path
     semantic_status = inspect_semantic_status(memory_config)
+    fallback_db_path = resolve_db_path(cwd=working_directory, env=command_env)
     total_capacity_mb = memory_config.total_capacity_mb
     total_capacity = int(total_capacity_mb * (1 << 20))
     app_data_root_is_mount = mount_checker(app_data_root)
@@ -205,6 +235,7 @@ def doctor(
         "breathing_memory_command": shutil.which("breathing-memory", path=command_env.get("PATH")),
         "codex_command": codex_path,
         "environment": environment,
+        "diagnostic_context": resolution_context,
         "project_identity": {"source": identity_source, "value": identity_value},
         "app_data_root": str(app_data_root),
         "app_data_root_is_mount": app_data_root_is_mount,
@@ -219,6 +250,7 @@ def doctor(
             environment=environment,
             app_data_root_is_mount=app_data_root_is_mount,
             retrieval=semantic_status,
+            registration_status=registration_status,
         ),
         "next_steps": build_doctor_next_steps(
             breathing_memory_command=shutil.which("breathing-memory", path=command_env.get("PATH")),
@@ -226,6 +258,8 @@ def doctor(
             registration_status=registration_status,
             db_exists=db_path.exists(),
             retrieval=semantic_status,
+            fallback_db_path=fallback_db_path,
+            active_db_path=db_path,
         ),
     }
     if json_output:
@@ -237,6 +271,8 @@ def inspect_codex_registration_status(
     codex_path: str | None,
     runner: Any = subprocess.run,
     env: Mapping[str, str] | None = None,
+    expected_env: Mapping[str, str] | None = None,
+    working_directory: Path | None = None,
 ) -> dict[str, Any]:
     if codex_path is None:
         return {"status": "codex_not_found", "matches_expected": False}
@@ -250,10 +286,22 @@ def inspect_codex_registration_status(
         }
     if registration is None:
         return {"status": "missing", "matches_expected": False}
+    transport = registration.get("transport")
+    actual_env = extract_registration_env(registration)
+    matches = codex_registration_matches(registration, expected_env or {})
+    status = "configured" if matches else "conflict"
+    reason = "unexpected_registration"
+    if status == "configured":
+        reason = "matches_expected"
+    elif transport.get("env") in (None, {}) and transport.get("env_vars") in (None, []):
+        reason = "legacy_unpinned_registration"
     return {
-        "status": "configured" if codex_registration_matches(registration) else "conflict",
-        "matches_expected": codex_registration_matches(registration),
+        "status": status,
+        "reason": reason,
+        "matches_expected": matches,
         "transport": registration.get("transport"),
+        "env": actual_env,
+        "working_directory": str(working_directory) if working_directory is not None else None,
     }
 
 
@@ -275,6 +323,7 @@ def build_doctor_warnings(
     environment: Mapping[str, bool],
     app_data_root_is_mount: bool,
     retrieval: Mapping[str, Any],
+    registration_status: Mapping[str, Any],
 ) -> list[str]:
     warnings: list[str] = []
     if environment.get("is_container") and DB_PATH_ENV_VAR not in env and not app_data_root_is_mount:
@@ -282,9 +331,14 @@ def build_doctor_warnings(
             "Container environment detected, but the default Breathing Memory app-data root is not a dedicated mount. "
             "Memory may not survive container rebuilds unless you mount this path or set BREATHING_MEMORY_DB_PATH."
         )
-    if retrieval.get("configured_mode") == "default":
+    if registration_status.get("reason") == "legacy_unpinned_registration":
         warnings.append(
-            "Configured retrieval_mode is 'default', but the HNSW-backed default mode is not implemented yet."
+            "Codex registration is still using the legacy unpinned format. Rerun `breathing-memory install-codex` "
+            "to pin it to a stable project identity."
+        )
+    if retrieval.get("configured_mode") == "default" and not retrieval.get("hnsw_support_available"):
+        warnings.append(
+            "Configured retrieval_mode is 'default', but HNSW index support is not available in this Python environment."
         )
     if retrieval.get("configured_mode") == "lite" and not retrieval.get("semantic_extra_available"):
         warnings.append(
@@ -299,6 +353,8 @@ def build_doctor_next_steps(
     registration_status: Mapping[str, Any],
     db_exists: bool,
     retrieval: Mapping[str, Any],
+    fallback_db_path: Path,
+    active_db_path: Path,
 ) -> list[str]:
     steps: list[str] = []
     if breathing_memory_command is None:
@@ -312,20 +368,36 @@ def build_doctor_next_steps(
     if status == "missing":
         return ["Run `breathing-memory install-codex` in this repository."]
     if status == "conflict":
+        if registration_status.get("reason") == "legacy_unpinned_registration":
+            steps = ["Rerun `breathing-memory install-codex` to migrate Codex registration to a stable project identity."]
+            if fallback_db_path.exists() and active_db_path != fallback_db_path:
+                steps.append(
+                    f"If you want to keep existing memory, move `{fallback_db_path}` to `{active_db_path}` manually."
+                )
+            return steps
         return [
             "Run `codex mcp remove breathing-memory`, then rerun `breathing-memory install-codex`."
         ]
     if status == "check_failed":
         return ["Fix the Codex registration check failure, then rerun `breathing-memory doctor`."]
     if status == "configured" and not db_exists:
-        steps = ["Open this repository in Codex and start a conversation to create the project DB."]
+        steps = ["Codex registration is pinned to a stable project identity."]
+        if fallback_db_path.exists() and active_db_path != fallback_db_path:
+            steps.append(
+                f"If you want to keep existing memory, move `{fallback_db_path}` to `{active_db_path}` manually."
+            )
+        steps.append("Open this repository in Codex and start a conversation to create the project DB.")
         if not retrieval.get("semantic_extra_available"):
-            steps.append("Optional: install `breathing-memory[semantic]` to enable `lite` semantic retrieval.")
+            steps.append("Optional: install `breathing-memory[semantic]` to enable semantic retrieval.")
+        elif not retrieval.get("hnsw_index_ready"):
+            steps.append("Start or continue a conversation to build the HNSW index and enable `default` retrieval.")
         return steps
     if status == "configured":
-        steps = ["Breathing Memory looks ready for this repository."]
+        steps = ["Codex registration is pinned to a stable project identity.", "Breathing Memory looks ready for this repository."]
         if not retrieval.get("semantic_extra_available"):
-            steps.append("Optional: install `breathing-memory[semantic]` to enable `lite` semantic retrieval.")
+            steps.append("Optional: install `breathing-memory[semantic]` to enable semantic retrieval.")
+        elif not retrieval.get("hnsw_index_ready"):
+            steps.append("Start or continue a conversation to build the HNSW index and enable `default` retrieval.")
         return steps
     return []
 
@@ -333,12 +405,30 @@ def build_doctor_next_steps(
 def inspect_semantic_status(memory_config: MemoryConfig) -> dict[str, Any]:
     configured_mode = memory_config.retrieval_mode
     semantic_available = semantic_extra_available()
+    hnsw_status = inspect_hnsw_status(memory_config)
+    hnsw_support_available = bool(hnsw_status["support_available"])
+    hnsw_index_ready = bool(hnsw_status["ready"])
     if configured_mode == "auto":
-        effective_mode = "lite" if semantic_available else "super_lite"
-        reason = "auto_with_semantic_backend" if semantic_available else "auto_without_semantic_backend"
+        if not semantic_available:
+            effective_mode = "super_lite"
+            reason = "auto_without_semantic_backend"
+        elif hnsw_index_ready:
+            effective_mode = "default"
+            reason = "auto_with_hnsw_ready"
+        elif hnsw_support_available:
+            effective_mode = "lite"
+            reason = "auto_hnsw_build_required"
+        else:
+            effective_mode = "lite"
+            reason = "auto_without_hnsw_support"
     elif configured_mode == "default":
         effective_mode = "default"
-        reason = "pinned_default_mode"
+        if hnsw_index_ready:
+            reason = "pinned_default_mode_ready"
+        elif hnsw_support_available:
+            reason = "pinned_default_mode_rebuild_required"
+        else:
+            reason = "pinned_default_mode_without_hnsw_support"
     elif configured_mode == "lite":
         effective_mode = "lite"
         reason = "pinned_lite_mode"
@@ -350,8 +440,28 @@ def inspect_semantic_status(memory_config: MemoryConfig) -> dict[str, Any]:
         "effective_mode": effective_mode,
         "resolution_reason": reason,
         "semantic_extra_available": semantic_available,
+        "hnsw_support_available": hnsw_support_available,
+        "hnsw_index_ready": hnsw_index_ready,
+        "hnsw_status": hnsw_status["status"],
+        "hnsw_reason": hnsw_status["reason"],
+        "hnsw_index_path": hnsw_status["index_path"],
+        "hnsw_metadata_path": hnsw_status["metadata_path"],
         "embedding_model": memory_config.embedding_model if semantic_available else None,
     }
+
+
+def inspect_hnsw_status(memory_config: MemoryConfig) -> dict[str, Any]:
+    fragment_ids: list[int] = []
+    if memory_config.db_path.exists():
+        store = SQLiteStore(memory_config.db_path)
+        try:
+            fragment_ids = [fragment.id for fragment in store.list_fragments()]
+        finally:
+            store.close()
+    return HnswIndex(memory_config.db_path).inspect(
+        fragment_ids=fragment_ids,
+        embedding_model=memory_config.embedding_model,
+    )
 
 
 def build_memory_report(engine: BreathingMemoryEngine) -> dict[str, Any]:
@@ -430,6 +540,7 @@ def format_doctor_report(report: Mapping[str, Any]) -> str:
         f"Codex on PATH: {report['codex_command'] or 'not found'}",
         f"Container environment: {'yes' if environment['is_container'] else 'no'}",
         f"DevContainer environment: {'yes' if environment['is_devcontainer'] else 'no'}",
+        f"Diagnostic context: {report['diagnostic_context']}",
         f"Project identity: {identity['source']} = {identity['value']}",
         f"App-data root: {report['app_data_root']}",
         f"App-data root is mount: {'yes' if report['app_data_root_is_mount'] else 'no'}",
@@ -438,6 +549,9 @@ def format_doctor_report(report: Mapping[str, Any]) -> str:
         f"Configured retrieval mode: {retrieval['configured_mode']}",
         f"Effective retrieval mode: {retrieval['effective_mode']} ({retrieval['resolution_reason']})",
         f"Semantic extra available: {'yes' if retrieval['semantic_extra_available'] else 'no'}",
+        f"HNSW support available: {'yes' if retrieval['hnsw_support_available'] else 'no'}",
+        f"HNSW index ready: {'yes' if retrieval['hnsw_index_ready'] else 'no'} ({retrieval['hnsw_reason']})",
+        f"HNSW index path: {retrieval['hnsw_index_path']}",
         f"Embedding model: {retrieval['embedding_model'] or 'not available'}",
         f"Total capacity: {report['total_capacity']} bytes",
         f"Codex registration: {registration['status']}",
@@ -472,7 +586,10 @@ def get_codex_registration(
     raise CLIError(format_subprocess_error("Failed to inspect Codex MCP registrations.", completed))
 
 
-def codex_registration_matches(registration: Mapping[str, Any]) -> bool:
+def codex_registration_matches_with_env(
+    registration: Mapping[str, Any],
+    expected_env: Mapping[str, str],
+) -> bool:
     transport = registration.get("transport")
     if not isinstance(transport, Mapping):
         return False
@@ -482,12 +599,16 @@ def codex_registration_matches(registration: Mapping[str, Any]) -> bool:
         and transport.get("command") == MCP_SERVER_COMMAND
         and transport.get("args") == MCP_SERVER_ARGS
         and transport.get("cwd") is None
-        and transport.get("env") in (None, {})
+        and extract_registration_env(registration) == dict(expected_env)
         and transport.get("env_vars") in (None, [])
     )
 
 
-def describe_expected_registration() -> str:
+def codex_registration_matches(registration: Mapping[str, Any], expected_env: Mapping[str, str] | None = None) -> bool:
+    return codex_registration_matches_with_env(registration, expected_env or {})
+
+
+def describe_expected_registration(expected_env: Mapping[str, str] | None = None) -> str:
     return describe_registration(
         {
             "transport": {
@@ -495,7 +616,7 @@ def describe_expected_registration() -> str:
                 "command": MCP_SERVER_COMMAND,
                 "args": list(MCP_SERVER_ARGS),
                 "cwd": None,
-                "env": None,
+                "env": dict(expected_env or {}),
                 "env_vars": [],
             }
         }
@@ -514,11 +635,81 @@ def describe_registration(registration: Mapping[str, Any]) -> str:
     if transport.get("cwd"):
         extras.append(f"cwd={transport['cwd']}")
     if transport.get("env"):
-        extras.append("env=custom")
+        extras.append(f"env={transport['env']}")
     if transport.get("env_vars"):
         extras.append(f"env_vars={transport['env_vars']}")
     extras_text = f" ({', '.join(extras)})" if extras else ""
     return f"{transport.get('type', 'unknown')} {command_line}{extras_text}"
+
+
+def build_auto_project_id(identity_source: str, identity_value: str) -> str:
+    return f"codex-{build_project_key(identity_source, identity_value)}"
+
+
+def resolve_codex_registration_binding(
+    cwd: Path,
+    env: Mapping[str, str],
+) -> dict[str, Any]:
+    explicit_db_path = env.get(DB_PATH_ENV_VAR, "").strip()
+    if explicit_db_path:
+        db_path = str(Path(explicit_db_path).expanduser())
+        return {
+            "mode": "explicit_db_path",
+            "env": {DB_PATH_ENV_VAR: db_path},
+            "identity_source": "db_path",
+            "identity_value": db_path,
+        }
+
+    explicit_project_id = env.get(PROJECT_ID_ENV_VAR, "").strip()
+    if explicit_project_id:
+        return {
+            "mode": "explicit_project_id",
+            "env": {PROJECT_ID_ENV_VAR: explicit_project_id},
+            "identity_source": "project_id",
+            "identity_value": explicit_project_id,
+        }
+
+    derived_source, derived_value = resolve_project_identity(cwd=cwd, env=env)
+    auto_project_id = build_auto_project_id(derived_source, derived_value)
+    return {
+        "mode": "auto_project_id",
+        "env": {PROJECT_ID_ENV_VAR: auto_project_id},
+        "identity_source": "project_id",
+        "identity_value": auto_project_id,
+        "derived_source": derived_source,
+        "derived_value": derived_value,
+    }
+
+
+def describe_binding_identity(binding: Mapping[str, Any], identity_source: str, identity_value: str) -> str:
+    if binding.get("mode") == "auto_project_id":
+        return (
+            f"{identity_source} = {identity_value} "
+            f"(derived from {binding['derived_source']} = {binding['derived_value']})"
+        )
+    return f"{identity_source} = {identity_value}"
+
+
+def extract_registration_env(registration: Mapping[str, Any]) -> dict[str, str]:
+    transport = registration.get("transport")
+    if not isinstance(transport, Mapping):
+        return {}
+    env = transport.get("env")
+    if not isinstance(env, Mapping):
+        return {}
+    return {str(key): str(value) for key, value in env.items()}
+
+
+def resolve_doctor_environment(
+    base_env: Mapping[str, str],
+    registration_status: Mapping[str, Any],
+) -> tuple[str, dict[str, str]]:
+    registration_env = registration_status.get("env") or {}
+    if registration_env:
+        merged = dict(base_env)
+        merged.update({str(key): str(value) for key, value in registration_env.items()})
+        return ("codex_registration", merged)
+    return ("working_directory", dict(base_env))
 
 
 def format_subprocess_error(prefix: str, completed: Any) -> str:

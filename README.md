@@ -25,7 +25,7 @@ pip install breathing-memory
 breathing-memory install-codex
 ```
 
-`breathing-memory install-codex` registers the `breathing-memory` MCP server with the currently supported client and creates or updates the managed Breathing Memory block in the current repository's `AGENTS.md`.
+`breathing-memory install-codex` registers the `breathing-memory` MCP server with the currently supported client, pins that registration to a stable project identity for the current repository, and creates or updates the managed Breathing Memory block in the current repository's `AGENTS.md`.
 
 Published package:
 
@@ -46,8 +46,8 @@ Release notes:
 - PyPI publish runs from `.github/workflows/publish.yml`
 - `v0.1.0` is published on PyPI
 - `v0.2.0` is published on PyPI with optional `lite` semantic retrieval, search diagnostics, and mode-aware Codex guidance
-- the current development version is `v0.3.0`, which adds `memory_recent` and caller-side duplicate-check guidance
-- pushing a tag such as `v0.3.0` triggers the build and PyPI publish workflow
+- the current development version is `v0.4.0`, which adds HNSW-backed `default` retrieval and stable Codex project-id pinning
+- pushing a tag such as `v0.4.0` triggers the build and PyPI publish workflow
 
 ## Quickstart
 
@@ -109,9 +109,13 @@ Current MCP tools:
 
 Breathing Memory stores data under the user app-data directory resolved by `platformdirs`, then separates memory by project identity. The exact SQLite path can be inspected with `breathing-memory doctor`.
 
-The current implementation supports lexical retrieval by default and direct embedding retrieval in `lite` mode when the optional `semantic` extra is installed. Runtime `auto` resolves to `lite` when an embedding backend is available and otherwise falls back to `super_lite`. HNSW-backed `default` mode remains unimplemented.
+For Codex installs, `install-codex` now pins the MCP registration to a stable project identity derived from the repository at install time, so the live MCP server does not drift with VSCode or Codex internal working directories. `doctor` prefers that registration-derived identity when it is available, so its reported DB path matches the live MCP target rather than the shell's current directory.
 
-`breathing-memory doctor` reports both the configured retrieval mode and the effective runtime mode, so after installing `breathing-memory[semantic]` you can verify that `auto` now resolves to `lite`.
+If you already have remembered data under an older unpinned Codex registration, migration is manual by design. Move the SQLite database yourself if you want to keep that history; Breathing Memory does not auto-discover or auto-merge old databases.
+
+The current implementation supports lexical retrieval by default and semantic retrieval through the optional `semantic` extra. Runtime `auto` resolves to `default` when both the embedding backend and a healthy HNSW index are available, falls back to `lite` when embeddings are available but the ANN index is missing or recovering, and falls back to `super_lite` when semantic retrieval is unavailable.
+
+`breathing-memory doctor` reports both the configured retrieval mode and the effective runtime mode, along with HNSW support and index readiness, so after installing `breathing-memory[semantic]` you can verify when `auto` has moved from `lite` to `default`.
 `breathing-memory install-codex` also prints the effective retrieval mode in its post-install summary, so the semantic state is visible even before the first MCP conversation.
 
 The current compression backend invokes a supported coding agent without leaving normal conversation history. In the current supported setup, that path uses Codex through `codex exec --ephemeral`.
