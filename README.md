@@ -45,7 +45,7 @@ Release notes:
 
 - PyPI publish runs from `.github/workflows/publish.yml`
 - `v0.1.0` is published on PyPI
-- the next planned release is `v0.2.0`, which adds optional `lite` semantic retrieval, search diagnostics, and mode-aware Codex guidance
+- `v0.2.0` is published on PyPI with optional `lite` semantic retrieval, search diagnostics, and mode-aware Codex guidance
 - pushing a tag such as `v0.2.0` triggers the build and PyPI publish workflow
 
 ## Quickstart
@@ -62,7 +62,7 @@ breathing-memory install-codex
 
 Useful commands:
 
-- `breathing-memory doctor`: inspect installation, active project identity, DB path selection, and client registration state
+- `breathing-memory doctor`: inspect installation, active project identity, DB path selection, Codex registration state, and effective retrieval mode
 - `breathing-memory serve`: start the stdio MCP server
 - `breathing-memory inspect-memory --json`: inspect current memory state
 
@@ -105,6 +105,9 @@ Current MCP tools:
 Breathing Memory stores data under the user app-data directory resolved by `platformdirs`, then separates memory by project identity. The exact SQLite path can be inspected with `breathing-memory doctor`.
 
 The current implementation supports lexical retrieval by default and direct embedding retrieval in `lite` mode when the optional `semantic` extra is installed. Runtime `auto` resolves to `lite` when an embedding backend is available and otherwise falls back to `super_lite`. HNSW-backed `default` mode remains unimplemented.
+
+`breathing-memory doctor` reports both the configured retrieval mode and the effective runtime mode, so after installing `breathing-memory[semantic]` you can verify that `auto` now resolves to `lite`.
+`breathing-memory install-codex` also prints the effective retrieval mode in its post-install summary, so the semantic state is visible even before the first MCP conversation.
 
 The current compression backend invokes a supported coding agent without leaving normal conversation history. In the current supported setup, that path uses Codex through `codex exec --ephemeral`.
 

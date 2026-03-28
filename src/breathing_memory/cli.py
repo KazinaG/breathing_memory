@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -12,6 +11,13 @@ import subprocess
 import sys
 from typing import Any, Mapping, Sequence
 
+from .agents_template import (
+    AGENTS_BLOCK_END,
+    AGENTS_BLOCK_START,
+    render_agents_block,
+    resolve_agents_guidance_mode,
+    semantic_extra_available,
+)
 from .config import MemoryConfig
 from .engine import BreathingMemoryEngine
 from .mcp_server import serve_stdio_server
@@ -22,75 +28,6 @@ MCP_SERVER_NAME = "breathing-memory"
 MCP_SERVER_COMMAND = "breathing-memory"
 MCP_SERVER_ARGS = ["serve"]
 AGENTS_FILENAME = "AGENTS.md"
-AGENTS_BLOCK_START = "<!-- BEGIN BREATHING MEMORY -->"
-AGENTS_BLOCK_END = "<!-- END BREATHING MEMORY -->"
-AGENTS_BLOCK_PREFIX = """## Breathing Memory
-
-This repository uses Breathing Memory during Codex work.
-
-### Required Flow
-
-For every user turn in this repository, Codex must use the MCP tools in this order:
-
-1. If the immediately previous final agent answer has not yet been remembered, save it first with `memory_remember(actor="agent")`
-2. Save the current user message with `memory_remember(actor="user")`
-3. Search with `memory_search` before producing the next final answer
-
-Use the returned previous-agent `anchor_id` as the current user's `reply_to` when the user is replying to the immediately previous answer.
-When the user is replying or forking from an earlier remembered anchor, pass that target as the user's `reply_to` instead.
-For a root user message, omit `reply_to`.
-
-### What To Save
-
-- Save every user message.
-- Save each final user-facing answer on the next user turn.
-- Do not save intermediary commentary, progress updates, or tool-status messages.
-- Do not save duplicate retries of the same final answer.
-- `memory_remember` suppresses duplicate deferred agent capture for the same `reply_to` and content, but callers must still pass accurate `reply_to` values and capture timing.
-- If no later user turn arrives, the final agent answer may remain unremembered.
-
-### Search Query
-"""
-
-AGENTS_SEARCH_QUERY_COMMON = """- `memory_search.query` must be chosen by the MCP-calling agent for the current user request.
-- Keep the query in the user's language and avoid unnecessary translation.
-- Use the default `search_effort` of `32` unless there is a concrete reason to choose a different valid value up front.
-- Start with a `result_count` of `8` unless there is a concrete reason to choose a different valid value up front.
-- If the first search result looks insufficient, rerun `memory_search` with a broader `result_count`, a higher `search_effort`, or both.
-- Treat `result_count` as powers of two from the base `8`, and `search_effort` as powers of two from the base `32`.
-"""
-
-AGENTS_SEARCH_QUERY_SUPER_LITE = """- Choose a query optimized for lexical retrieval.
-- Rewrite the user request into a shorter search-oriented query when that improves lexical matching.
-- Use keyword- or phrase-oriented queries when they improve lexical retrieval.
-"""
-
-AGENTS_SEARCH_QUERY_SEMANTIC = """- Choose a query optimized for semantic retrieval.
-- Rewrite the user request into a search-oriented query when that improves semantic retrieval.
-- Do not collapse the query into a keyword bag unless there is a clear retrieval benefit.
-"""
-
-AGENTS_BLOCK_SUFFIX = """
-
-### Source References
-
-- Track which fragments returned by `memory_search` materially inform the final answer while drafting it.
-- If the deferred final answer materially uses fragments returned by `memory_search`, pass those fragment ids as `source_fragment_ids` when that answer is persisted on the next user turn.
-- If no search result materially informed the final answer, omit `source_fragment_ids`.
-
-### Feedback Attribution
-
-- When a user message clearly confirms, corrects, or evaluates remembered information, record that with `memory_feedback`.
-- Decide whether that feedback applies to the immediately previous answer fragment, to referenced fragments used by that answer, or to both.
-- If the target of the feedback is ambiguous, skip `memory_feedback` rather than guessing.
-
-### Failure Policy
-
-- Do not fabricate remembered ids such as `reply_to` or `source_fragment_ids`.
-- If semantic-index mode is enabled and the semantic index is being rebuilt or recovered, do not issue other Breathing Memory mutations or semantic searches until that rebuild completes.
-- `archived_sessions/*.jsonl` and other Codex runtime files are not the primary capture path. They are internal implementation details and must not be used as the default memory source.
-"""
-
 
 class CLIError(RuntimeError):
     pass
@@ -205,17 +142,21 @@ def install_codex_registration(
 
     agents_message = write_agents_file(agents_path, current_agents, planned_agents)
     identity_source, identity_value = resolve_project_identity(cwd=working_directory, env=command_env)
-    db_path = resolve_db_path(cwd=working_directory, env=command_env)
+    memory_config = MemoryConfig(db_path=resolve_db_path(cwd=working_directory, env=command_env))
+    db_path = memory_config.db_path
+    retrieval = inspect_semantic_status(memory_config)
     post_check_block = f"{post_check_message}\n" if post_check_message else ""
-    next_steps = "\n".join(
-        [
-            "Next steps:",
-            f"- Project identity: {identity_source} = {identity_value}",
-            f"- DB path: {db_path}",
-            "- Run `breathing-memory doctor` to verify the installation.",
-            "- Open this repository in Codex and start using the registered MCP server.",
-        ]
-    )
+    next_step_lines = [
+        "Next steps:",
+        f"- Project identity: {identity_source} = {identity_value}",
+        f"- DB path: {db_path}",
+        f"- Effective retrieval mode: {retrieval['effective_mode']} ({retrieval['resolution_reason']})",
+        "- Run `breathing-memory doctor` to verify the installation.",
+        "- Open this repository in Codex and start using the registered MCP server.",
+    ]
+    if not retrieval["semantic_extra_available"]:
+        next_step_lines.append("- Optional: install `breathing-memory[semantic]` to enable `lite` semantic retrieval.")
+    next_steps = "\n".join(next_step_lines)
     return f"{registration_message}\n{post_check_block}{agents_message}\n\n{next_steps}"
 
 
@@ -241,8 +182,9 @@ def doctor(
 ) -> str:
     command_env = dict(os.environ if env is None else env)
     working_directory = Path.cwd() if cwd is None else Path(cwd)
+    memory_config = MemoryConfig(db_path=resolve_db_path(cwd=working_directory, env=command_env))
     identity_source, identity_value = resolve_project_identity(cwd=working_directory, env=command_env)
-    db_path = resolve_db_path(cwd=working_directory, env=command_env)
+    db_path = memory_config.db_path
     app_data_root = get_app_data_root()
     codex_path = shutil.which("codex", path=command_env.get("PATH"))
     environment = detect_runtime_environment(command_env)
@@ -252,7 +194,8 @@ def doctor(
         runner=runner,
         env=command_env,
     )
-    total_capacity_mb = MemoryConfig(db_path=db_path).total_capacity_mb
+    semantic_status = inspect_semantic_status(memory_config)
+    total_capacity_mb = memory_config.total_capacity_mb
     total_capacity = int(total_capacity_mb * (1 << 20))
     app_data_root_is_mount = mount_checker(app_data_root)
     report = {
@@ -267,6 +210,7 @@ def doctor(
         "app_data_root_is_mount": app_data_root_is_mount,
         "db_path": str(db_path),
         "db_exists": db_path.exists(),
+        "retrieval": semantic_status,
         "total_capacity_mb": total_capacity_mb,
         "total_capacity": total_capacity,
         "codex_registration": registration_status,
@@ -274,12 +218,14 @@ def doctor(
             env=command_env,
             environment=environment,
             app_data_root_is_mount=app_data_root_is_mount,
+            retrieval=semantic_status,
         ),
         "next_steps": build_doctor_next_steps(
             breathing_memory_command=shutil.which("breathing-memory", path=command_env.get("PATH")),
             codex_command=codex_path,
             registration_status=registration_status,
             db_exists=db_path.exists(),
+            retrieval=semantic_status,
         ),
     }
     if json_output:
@@ -328,12 +274,21 @@ def build_doctor_warnings(
     env: Mapping[str, str],
     environment: Mapping[str, bool],
     app_data_root_is_mount: bool,
+    retrieval: Mapping[str, Any],
 ) -> list[str]:
     warnings: list[str] = []
     if environment.get("is_container") and DB_PATH_ENV_VAR not in env and not app_data_root_is_mount:
         warnings.append(
             "Container environment detected, but the default Breathing Memory app-data root is not a dedicated mount. "
             "Memory may not survive container rebuilds unless you mount this path or set BREATHING_MEMORY_DB_PATH."
+        )
+    if retrieval.get("configured_mode") == "default":
+        warnings.append(
+            "Configured retrieval_mode is 'default', but the HNSW-backed default mode is not implemented yet."
+        )
+    if retrieval.get("configured_mode") == "lite" and not retrieval.get("semantic_extra_available"):
+        warnings.append(
+            "Configured retrieval_mode is 'lite', but the optional semantic extra is not available in this Python environment."
         )
     return warnings
 
@@ -343,6 +298,7 @@ def build_doctor_next_steps(
     codex_command: str | None,
     registration_status: Mapping[str, Any],
     db_exists: bool,
+    retrieval: Mapping[str, Any],
 ) -> list[str]:
     steps: list[str] = []
     if breathing_memory_command is None:
@@ -362,10 +318,40 @@ def build_doctor_next_steps(
     if status == "check_failed":
         return ["Fix the Codex registration check failure, then rerun `breathing-memory doctor`."]
     if status == "configured" and not db_exists:
-        return ["Open this repository in Codex and start a conversation to create the project DB."]
+        steps = ["Open this repository in Codex and start a conversation to create the project DB."]
+        if not retrieval.get("semantic_extra_available"):
+            steps.append("Optional: install `breathing-memory[semantic]` to enable `lite` semantic retrieval.")
+        return steps
     if status == "configured":
-        return ["Breathing Memory looks ready for this repository."]
+        steps = ["Breathing Memory looks ready for this repository."]
+        if not retrieval.get("semantic_extra_available"):
+            steps.append("Optional: install `breathing-memory[semantic]` to enable `lite` semantic retrieval.")
+        return steps
     return []
+
+
+def inspect_semantic_status(memory_config: MemoryConfig) -> dict[str, Any]:
+    configured_mode = memory_config.retrieval_mode
+    semantic_available = semantic_extra_available()
+    if configured_mode == "auto":
+        effective_mode = "lite" if semantic_available else "super_lite"
+        reason = "auto_with_semantic_backend" if semantic_available else "auto_without_semantic_backend"
+    elif configured_mode == "default":
+        effective_mode = "default"
+        reason = "pinned_default_mode"
+    elif configured_mode == "lite":
+        effective_mode = "lite"
+        reason = "pinned_lite_mode"
+    else:
+        effective_mode = "super_lite"
+        reason = "pinned_super_lite_mode"
+    return {
+        "configured_mode": configured_mode,
+        "effective_mode": effective_mode,
+        "resolution_reason": reason,
+        "semantic_extra_available": semantic_available,
+        "embedding_model": memory_config.embedding_model if semantic_available else None,
+    }
 
 
 def build_memory_report(engine: BreathingMemoryEngine) -> dict[str, Any]:
@@ -436,6 +422,7 @@ def format_doctor_report(report: Mapping[str, Any]) -> str:
     registration = report["codex_registration"]
     environment = report["environment"]
     identity = report["project_identity"]
+    retrieval = report["retrieval"]
     lines = [
         f"Python: {report['python_executable']} ({report['python_version']})",
         f"Working directory: {report['working_directory']}",
@@ -448,6 +435,10 @@ def format_doctor_report(report: Mapping[str, Any]) -> str:
         f"App-data root is mount: {'yes' if report['app_data_root_is_mount'] else 'no'}",
         f"DB path: {report['db_path']}",
         f"DB exists: {'yes' if report['db_exists'] else 'no'}",
+        f"Configured retrieval mode: {retrieval['configured_mode']}",
+        f"Effective retrieval mode: {retrieval['effective_mode']} ({retrieval['resolution_reason']})",
+        f"Semantic extra available: {'yes' if retrieval['semantic_extra_available'] else 'no'}",
+        f"Embedding model: {retrieval['embedding_model'] or 'not available'}",
         f"Total capacity: {report['total_capacity']} bytes",
         f"Codex registration: {registration['status']}",
     ]
@@ -585,42 +576,3 @@ def upsert_agents_block(current: str | None, *, guidance_mode: str) -> str:
     suffix = current[end_index:].lstrip()
     sections = [section for section in [prefix, managed_block, suffix] if section]
     return "\n\n".join(sections) + "\n"
-
-
-def render_agents_block(*, guidance_mode: str) -> str:
-    return f"{AGENTS_BLOCK_START}\n{build_agents_block_body(guidance_mode).rstrip()}\n{AGENTS_BLOCK_END}"
-
-
-def build_agents_block_body(guidance_mode: str) -> str:
-    if guidance_mode == "super_lite":
-        mode_specific = AGENTS_SEARCH_QUERY_SUPER_LITE
-    elif guidance_mode == "semantic":
-        mode_specific = AGENTS_SEARCH_QUERY_SEMANTIC
-    else:
-        raise ValueError("guidance_mode must be 'super_lite' or 'semantic'")
-    return (
-        AGENTS_BLOCK_PREFIX
-        + AGENTS_SEARCH_QUERY_COMMON
-        + mode_specific
-        + AGENTS_BLOCK_SUFFIX
-    )
-
-
-def resolve_agents_guidance_mode(
-    retrieval_mode: str | None = None,
-    semantic_available: bool | None = None,
-) -> str:
-    active_retrieval_mode = MemoryConfig().retrieval_mode if retrieval_mode is None else retrieval_mode
-    has_semantic_support = semantic_extra_available() if semantic_available is None else semantic_available
-
-    if active_retrieval_mode == "super_lite":
-        return "super_lite"
-    if active_retrieval_mode in {"lite", "default"}:
-        return "semantic"
-    if active_retrieval_mode == "auto":
-        return "semantic" if has_semantic_support else "super_lite"
-    raise ValueError("retrieval_mode must be 'auto', 'super_lite', 'lite', or 'default'")
-
-
-def semantic_extra_available() -> bool:
-    return importlib.util.find_spec("sentence_transformers") is not None

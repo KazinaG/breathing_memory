@@ -13,7 +13,7 @@ pip install breathing-memory
 breathing-memory install-codex
 ```
 
-Published-package verification is still pending. Until that is available, use one of these paths:
+For development work or unreleased changes, use one of these paths instead:
 
 ### Install From Git
 
@@ -46,13 +46,29 @@ breathing-memory doctor
 - whether the current runtime looks like a container or DevContainer
 - which project identity is active
 - which SQLite path will be used
+- which retrieval mode is configured and which mode will actually be used at runtime
+- whether the optional semantic extra is available in the current Python environment
 - whether the expected Codex MCP registration already exists
 - which next action is recommended from the current state
 
 In container-like environments, `doctor` also warns when the default app-data root does not appear to be a dedicated mount, because memory may not survive container rebuilds in that setup.
+If `breathing-memory[semantic]` is installed, `doctor` will show that `auto` resolves to `lite`; otherwise it will show that `auto` resolves to `super_lite`.
 
 `breathing-memory install-codex` registers the user-scoped MCP entry named `breathing-memory` and creates or updates the managed Breathing Memory block in the current repository's `AGENTS.md`.
-After a successful run, it also performs a lightweight registration post-check and prints the active project identity, the resolved DB path, and the next verification step.
+After a successful run, it also performs a lightweight registration post-check and prints the active project identity, the resolved DB path, the effective retrieval mode, and the next verification step.
+
+Semantic quick check:
+
+```bash
+pip install 'breathing-memory[semantic]'
+breathing-memory doctor
+```
+
+After that, `doctor` should report:
+
+- `configured_mode: auto`
+- `effective_mode: lite`
+- `semantic_extra_available: true`
 
 Registration notes:
 

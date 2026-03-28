@@ -72,6 +72,7 @@ class CodexInstallTests(unittest.TestCase):
             self.assertIn("Next steps:", message)
             self.assertIn("Project identity:", message)
             self.assertIn("DB path:", message)
+            self.assertIn("Effective retrieval mode:", message)
             self.assertIn("breathing-memory doctor", message)
             self.assertEqual(
                 runner.calls[1][0],
@@ -105,6 +106,7 @@ class CodexInstallTests(unittest.TestCase):
             self.assertIn("already configured", first)
             self.assertIn("Created AGENTS.md", first)
             self.assertIn("Next steps:", first)
+            self.assertIn("Effective retrieval mode:", first)
 
             runner = FakeRunner(
                 [
@@ -304,6 +306,9 @@ class CodexInstallTests(unittest.TestCase):
 
         self.assertEqual(report["total_capacity_mb"], MemoryConfig().total_capacity_mb)
         self.assertEqual(report["total_capacity"], int(MemoryConfig().total_capacity_mb * (1 << 20)))
+        self.assertIn("retrieval", report)
+        self.assertEqual(report["retrieval"]["configured_mode"], "auto")
+        self.assertIn(report["retrieval"]["effective_mode"], {"super_lite", "lite"})
 
     def test_doctor_reports_matching_codex_registration(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -322,20 +327,24 @@ class CodexInstallTests(unittest.TestCase):
             )
 
             with patch("breathing_memory.cli.shutil.which", side_effect=lambda name, path=None: "/usr/bin/codex" if name == "codex" else "/usr/bin/breathing-memory"):
-                report = json.loads(
-                    doctor(
-                        json_output=True,
-                        runner=runner,
-                        env={"PATH": "/usr/bin"},
-                        cwd=Path(tempdir),
+                with patch("breathing_memory.cli.semantic_extra_available", return_value=False):
+                    report = json.loads(
+                        doctor(
+                            json_output=True,
+                            runner=runner,
+                            env={"PATH": "/usr/bin"},
+                            cwd=Path(tempdir),
+                        )
                     )
-                )
 
         self.assertEqual(report["codex_registration"]["status"], "configured")
         self.assertTrue(report["codex_registration"]["matches_expected"])
         self.assertEqual(
             report["next_steps"],
-            ["Open this repository in Codex and start a conversation to create the project DB."],
+            [
+                "Open this repository in Codex and start a conversation to create the project DB.",
+                "Optional: install `breathing-memory[semantic]` to enable `lite` semantic retrieval.",
+            ],
         )
 
     def test_doctor_warns_when_container_app_data_is_not_mounted(self) -> None:
@@ -352,6 +361,24 @@ class CodexInstallTests(unittest.TestCase):
         self.assertTrue(report["environment"]["is_devcontainer"])
         self.assertTrue(report["warnings"])
         self.assertIn("Memory may not survive container rebuilds", report["warnings"][0])
+
+    def test_doctor_reports_semantic_runtime_when_available(self) -> None:
+        with patch("breathing_memory.cli.semantic_extra_available", return_value=True):
+            report = json.loads(
+                doctor(
+                    json_output=True,
+                    env={"PATH": ""},
+                    cwd=Path("/workspace"),
+                )
+            )
+
+        self.assertTrue(report["retrieval"]["semantic_extra_available"])
+        self.assertEqual(report["retrieval"]["effective_mode"], "lite")
+        self.assertEqual(report["retrieval"]["resolution_reason"], "auto_with_semantic_backend")
+        self.assertEqual(
+            report["retrieval"]["embedding_model"],
+            MemoryConfig().embedding_model,
+        )
 
     def test_python_module_entrypoint_starts_server(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
