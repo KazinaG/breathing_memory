@@ -135,6 +135,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(metrics[0].anchor_id, anchors[0].id)
         self.assertEqual(metrics[0].compress_count, 0)
         self.assertEqual(metrics[0].delete_count, 0)
+        self.assertIsNone(fragment["kind"])
 
     def test_remember_rejects_unknown_reply_to_anchor(self) -> None:
         with self.assertRaisesRegex(ValueError, "reply_to anchor not found"):
@@ -190,6 +191,67 @@ class EngineTests(unittest.TestCase):
         finally:
             store.close()
 
+    def test_existing_database_without_kind_column_is_migrated(self) -> None:
+        db_path = self.root / "missing-kind.sqlite3"
+        connection = sqlite3.connect(str(db_path))
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE anchors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    replies_to_anchor_id INTEGER NULL REFERENCES anchors(id) ON DELETE SET NULL,
+                    is_root INTEGER NOT NULL CHECK (is_root IN (0, 1))
+                );
+
+                CREATE TABLE fragments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    anchor_id INTEGER NOT NULL REFERENCES anchors(id) ON DELETE CASCADE,
+                    parent_id INTEGER NULL REFERENCES fragments(id) ON DELETE SET NULL,
+                    actor TEXT NOT NULL CHECK (actor IN ('user', 'agent')),
+                    content TEXT NOT NULL,
+                    content_length INTEGER NOT NULL,
+                    embedding_vector BLOB NULL,
+                    layer TEXT NOT NULL CHECK (layer IN ('working', 'holding')),
+                    compression_fail_count INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE fragment_references (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    from_anchor_id INTEGER NOT NULL REFERENCES anchors(id) ON DELETE CASCADE,
+                    fragment_id INTEGER NOT NULL REFERENCES fragments(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE fragment_feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    from_anchor_id INTEGER NOT NULL REFERENCES anchors(id) ON DELETE CASCADE,
+                    fragment_id INTEGER NOT NULL REFERENCES fragments(id) ON DELETE CASCADE,
+                    verdict TEXT NOT NULL CHECK (verdict IN ('positive', 'neutral', 'negative'))
+                );
+
+                CREATE TABLE sequence_metrics (
+                    anchor_id INTEGER PRIMARY KEY REFERENCES anchors(id) ON DELETE CASCADE,
+                    working_usage_bytes INTEGER NOT NULL,
+                    holding_usage_bytes INTEGER NOT NULL,
+                    compress_count INTEGER NOT NULL,
+                    delete_count INTEGER NOT NULL
+                );
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        store = SQLiteStore(db_path)
+        try:
+            columns = store.connection.execute("PRAGMA table_info(fragments)").fetchall()
+            column_names = {row["name"] for row in columns}
+            self.assertIn("kind", column_names)
+            indexes = store.connection.execute("PRAGMA index_list(fragments)").fetchall()
+            index_names = {row["name"] for row in indexes}
+            self.assertIn("idx_fragments_kind_id", index_names)
+        finally:
+            store.close()
+
     def test_search_does_not_record_references(self) -> None:
         fragment = self.engine.remember(content="search me", actor="user")
         before = len(self.engine.store.list_references())
@@ -199,6 +261,46 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(result["items"][0]["id"], fragment["id"])
         self.assertEqual(len(self.engine.store.list_references()), before)
         self.assertNotIn("diagnostics", result["items"][0])
+
+    def test_remember_persists_kind_and_search_can_filter_by_kind(self) -> None:
+        policy = self.engine.remember(
+            content="Prefer concise answers first.",
+            actor="agent",
+            kind="collaboration_policy",
+        )
+        self.engine.remember(content="Regular memory", actor="agent")
+
+        result = self.engine.search(
+            "concise answers",
+            result_count=8,
+            search_effort=32,
+            kind="collaboration_policy",
+        )
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["items"][0]["id"], policy["id"])
+        self.assertEqual(result["items"][0]["kind"], "collaboration_policy")
+
+    def test_search_can_filter_by_actor(self) -> None:
+        agent = self.engine.remember(content="agent-authored summary", actor="agent")
+        self.engine.remember(content="user-authored summary", actor="user")
+
+        result = self.engine.search(
+            "summary",
+            result_count=8,
+            search_effort=32,
+            actor="agent",
+        )
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["items"][0]["id"], agent["id"])
+        self.assertEqual(result["items"][0]["actor"], "agent")
+
+    def test_search_rejects_unknown_actor_filter(self) -> None:
+        self.engine.remember(content="search me", actor="user")
+
+        with self.assertRaisesRegex(ValueError, "actor must be 'user' or 'agent'"):
+            self.engine.search("search", actor="system")
 
     def test_search_validates_result_count_and_search_effort(self) -> None:
         self.engine.remember(content="search me", actor="user")
@@ -493,6 +595,20 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(len(self.engine.store.list_anchors()), 2)
         self.assertEqual(len(self.engine.store.list_fragments()), 2)
 
+    def test_remember_deduplication_distinguishes_kind(self) -> None:
+        parent = self.engine.remember(content="question", actor="user")
+
+        regular = self.engine.remember(content="same answer", actor="agent", reply_to=parent["anchor_id"])
+        policy = self.engine.remember(
+            content="same answer",
+            actor="agent",
+            reply_to=parent["anchor_id"],
+            kind="collaboration_policy",
+        )
+
+        self.assertNotEqual(regular["id"], policy["id"])
+        self.assertEqual(len(self.engine.store.list_fragments()), 3)
+
     def test_remember_keeps_distinct_user_capture_for_same_reply_to_and_content(self) -> None:
         parent = self.engine.remember(content="question", actor="agent")
 
@@ -579,6 +695,21 @@ class EngineTests(unittest.TestCase):
         child_references = self.engine.store.list_references_for_fragment(child_fragment.id)
         self.assertEqual([item.verdict for item in child_feedback], ["positive"])
         self.assertEqual(len(child_references), 2)
+
+    def test_compression_preserves_kind_on_child_fragment(self) -> None:
+        self.engine.close()
+        self.engine = make_engine(self.root / "compress-kind", total_capacity=90)
+
+        parent = self.engine.remember(
+            content="x" * 40,
+            actor="agent",
+            kind="collaboration_policy",
+        )
+        self.engine.remember(content="y" * 30, actor="user")
+
+        fragments = self.engine.store.list_fragments_by_anchor(parent["anchor_id"])
+        child_fragment = next(fragment for fragment in fragments if fragment.id != parent["id"])
+        self.assertEqual(child_fragment.kind, "collaboration_policy")
 
     def test_purging_child_returns_failure_increment_to_parent(self) -> None:
         self.engine.close()
@@ -667,6 +798,31 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(by_fragment["count"], 1)
         self.assertEqual(by_fragment["items"][0]["id"], parent["id"])
         self.assertEqual(by_anchor["count"], 2)
+
+    def test_read_active_collaboration_policy_uses_token_budget_with_first_item_exception(self) -> None:
+        high_priority = self.engine.remember(
+            content="alpha beta gamma delta epsilon zeta eta theta",
+            actor="agent",
+            kind="collaboration_policy",
+        )
+        low_priority = self.engine.remember(
+            content="small policy",
+            actor="agent",
+            kind="collaboration_policy",
+        )
+        self.engine.feedback(
+            from_anchor_id=low_priority["anchor_id"],
+            fragment_id=low_priority["id"],
+            verdict="negative",
+        )
+
+        result = self.engine.read_active_collaboration_policy(token_budget=1)
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["items"][0]["id"], high_priority["id"])
+        self.assertTrue(result["truncated"])
+        self.assertGreater(result["used_token_budget"], 1)
+        self.assertNotEqual(result["items"][0]["id"], low_priority["id"])
 
     def test_stats_report_spec_fields_only(self) -> None:
         self.engine.remember(content="stats me", actor="user")

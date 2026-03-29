@@ -17,6 +17,7 @@ class Fragment:
     anchor_id: int
     parent_id: Optional[int]
     actor: str
+    kind: Optional[str]
     content: str
     content_length: int
     embedding_vector: Optional[bytes]

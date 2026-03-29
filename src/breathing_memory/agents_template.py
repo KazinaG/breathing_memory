@@ -17,7 +17,8 @@ For every user turn in this repository, Codex must use the MCP tools in this ord
 
 1. If the immediately previous final agent answer has not yet been remembered, check `memory_recent` for the latest remembered `agent` fragment with the same `reply_to`; if the latest remembered fragment already has the same content, skip the duplicate save, otherwise save it with `memory_remember(actor="agent")`
 2. Check `memory_recent` before saving the current user message; use `reply_to + content` as the first duplicate check, and if needed use a very recent `actor + content` fallback before calling `memory_remember(actor="user")`
-3. Search with `memory_search` before producing the next final answer
+3. Call `memory_read_active_collaboration_policy(token_budget=512)` before producing the next final answer
+4. Search with `memory_search` before producing the next final answer
 
 Use the returned previous-agent `anchor_id` as the current user's `reply_to` when the user is replying to the immediately previous answer.
 When the user is replying or forking from an earlier remembered anchor, pass that target as the user's `reply_to` instead.
@@ -33,6 +34,9 @@ For a root user message, omit `reply_to`.
 - `memory_remember` suppresses duplicate deferred `agent` capture for the same `reply_to` and content, but callers must still pass accurate `reply_to` values and capture timing.
 - For `user` messages, use caller-side `memory_recent` checks before `memory_remember` instead of relying on engine-side duplicate suppression.
 - If no later user turn arrives, the final agent answer may remain unremembered.
+- When a reusable rule about how to collaborate with the user becomes clear, Codex may save one or more derived `agent` fragments with `kind="collaboration_policy"`.
+- Keep each `collaboration_policy` fragment focused on a single reusable rule.
+- Use the same `reply_to` as the current turn's user anchor, but treat these fragments as derived policy memory rather than conversational threading.
 
 ### Search Query
 """
@@ -41,6 +45,7 @@ AGENTS_SEARCH_QUERY_COMMON = """- `memory_search.query` must be chosen by the MC
 - Keep the query in the user's language and avoid unnecessary translation.
 - Use the default `search_effort` of `32` unless there is a concrete reason to choose a different valid value up front.
 - Start with a `result_count` of `8` unless there is a concrete reason to choose a different valid value up front.
+- If retrieval is cleaner when limited to one side of the conversation, `memory_search` may use `actor="user"` or `actor="agent"`.
 - If the first search result looks insufficient, rerun `memory_search` with a broader `result_count`, a higher `search_effort`, or both.
 - Treat `result_count` as powers of two from the base `8`, and `search_effort` as powers of two from the base `32`.
 """
@@ -59,9 +64,15 @@ AGENTS_BLOCK_SUFFIX = """
 
 ### Source References
 
-- Track which fragments returned by `memory_search` materially inform the final answer while drafting it.
-- If the deferred final answer materially uses fragments returned by `memory_search`, pass those fragment ids as `source_fragment_ids` when that answer is persisted on the next user turn.
-- If no search result materially informed the final answer, omit `source_fragment_ids`.
+- Track which fragments returned by `memory_search` or `memory_read_active_collaboration_policy` materially inform the final answer while drafting it.
+- If the deferred final answer materially uses fragments returned by `memory_search` or `memory_read_active_collaboration_policy`, pass those fragment ids as `source_fragment_ids` when that answer is persisted on the next user turn.
+- If no retrieved fragment materially informed the final answer, omit `source_fragment_ids`.
+
+### Collaboration Policy
+
+- Use `memory_read_active_collaboration_policy(token_budget=512)` to preload collaboration-policy memory before forming the task query and answering.
+- Use collaboration-policy memory to shape how to answer or proceed, not as a substitute for task-memory retrieval.
+- If needed, run an additional `memory_search(..., kind="collaboration_policy")` for targeted clarification.
 
 ### Feedback Attribution
 

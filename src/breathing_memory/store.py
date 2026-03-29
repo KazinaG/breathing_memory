@@ -82,6 +82,7 @@ class SQLiteStore:
                 anchor_id INTEGER NOT NULL REFERENCES anchors(id) ON DELETE CASCADE,
                 parent_id INTEGER NULL REFERENCES fragments(id) ON DELETE SET NULL,
                 actor TEXT NOT NULL CHECK (actor IN ('user', 'agent')),
+                kind TEXT NULL,
                 content TEXT NOT NULL,
                 content_length INTEGER NOT NULL,
                 embedding_vector BLOB NULL,
@@ -149,7 +150,27 @@ class SQLiteStore:
             ON fragment_feedback(fragment_id, id);
             """
         )
+        self._ensure_fragment_kind_column()
         self.connection.commit()
+
+    def _ensure_fragment_kind_column(self) -> None:
+        columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(fragments)").fetchall()
+        }
+        if "kind" in columns:
+            self._ensure_fragment_kind_index()
+            return
+        self.connection.execute("ALTER TABLE fragments ADD COLUMN kind TEXT NULL")
+        self._ensure_fragment_kind_index()
+
+    def _ensure_fragment_kind_index(self) -> None:
+        self.connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_fragments_kind_id
+            ON fragments(kind, id)
+            """
+        )
 
     def create_anchor(self, replies_to_anchor_id: Optional[int], is_root: bool) -> int:
         cursor = self.connection.execute(
@@ -168,6 +189,7 @@ class SQLiteStore:
         actor: str,
         content: str,
         layer: str,
+        kind: Optional[str] = None,
         parent_id: Optional[int] = None,
         embedding_vector: Optional[bytes] = None,
     ) -> int:
@@ -177,17 +199,19 @@ class SQLiteStore:
                 anchor_id,
                 parent_id,
                 actor,
+                kind,
                 content,
                 content_length,
                 embedding_vector,
                 layer,
                 compression_fail_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
             """,
             (
                 anchor_id,
                 parent_id,
                 actor,
+                kind,
                 content,
                 self.content_size(content),
                 embedding_vector,
@@ -304,36 +328,94 @@ class SQLiteStore:
         ).fetchall()
         return [self._row_to_anchor(row) for row in rows]
 
-    def list_fragments(self) -> list[Fragment]:
-        rows = self.connection.execute(
-            "SELECT * FROM fragments ORDER BY id ASC"
-        ).fetchall()
+    def list_fragments(
+        self,
+        *,
+        actor: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> list[Fragment]:
+        conditions: list[str] = []
+        parameters: list[object] = []
+
+        if actor is not None:
+            conditions.append("actor = ?")
+            parameters.append(actor)
+        if kind is not None:
+            conditions.append("kind = ?")
+            parameters.append(kind)
+
+        if not conditions:
+            rows = self.connection.execute(
+                "SELECT * FROM fragments ORDER BY id ASC"
+            ).fetchall()
+        else:
+            where_clause = " AND ".join(conditions)
+            rows = self.connection.execute(
+                f"""
+                SELECT * FROM fragments
+                WHERE {where_clause}
+                ORDER BY id ASC
+                """,
+                tuple(parameters),
+            ).fetchall()
         return [self._row_to_fragment(row) for row in rows]
 
-    def list_fragments_by_anchor(self, anchor_id: int) -> list[Fragment]:
-        rows = self.connection.execute(
-            """
-            SELECT * FROM fragments
-            WHERE anchor_id = ?
-            ORDER BY id ASC
-            """,
-            (anchor_id,),
-        ).fetchall()
+    def list_fragments_by_anchor(self, anchor_id: int, *, kind: Optional[str] = None) -> list[Fragment]:
+        if kind is None:
+            rows = self.connection.execute(
+                """
+                SELECT * FROM fragments
+                WHERE anchor_id = ?
+                ORDER BY id ASC
+                """,
+                (anchor_id,),
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                """
+                SELECT * FROM fragments
+                WHERE anchor_id = ?
+                  AND kind = ?
+                ORDER BY id ASC
+                """,
+                (anchor_id, kind),
+            ).fetchall()
         return [self._row_to_fragment(row) for row in rows]
 
-    def list_root_fragments_replying_to_anchor(self, reply_to_anchor_id: int, actor: str) -> list[Fragment]:
-        rows = self.connection.execute(
-            """
-            SELECT fragments.*
-            FROM fragments
-            INNER JOIN anchors ON anchors.id = fragments.anchor_id
-            WHERE anchors.replies_to_anchor_id = ?
-              AND fragments.actor = ?
-              AND fragments.parent_id IS NULL
-            ORDER BY fragments.id DESC
-            """,
-            (reply_to_anchor_id, actor),
-        ).fetchall()
+    def list_root_fragments_replying_to_anchor(
+        self,
+        reply_to_anchor_id: int,
+        actor: str,
+        *,
+        kind: Optional[str] = None,
+    ) -> list[Fragment]:
+        if kind is None:
+            rows = self.connection.execute(
+                """
+                SELECT fragments.*
+                FROM fragments
+                INNER JOIN anchors ON anchors.id = fragments.anchor_id
+                WHERE anchors.replies_to_anchor_id = ?
+                  AND fragments.actor = ?
+                  AND fragments.parent_id IS NULL
+                ORDER BY fragments.id DESC
+                """,
+                (reply_to_anchor_id, actor),
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                """
+                SELECT fragments.*
+                FROM fragments
+                INNER JOIN anchors ON anchors.id = fragments.anchor_id
+                WHERE anchors.replies_to_anchor_id = ?
+                  AND fragments.actor = ?
+                  AND fragments.parent_id IS NULL
+                  AND fragments.kind = ?
+                ORDER BY fragments.id DESC
+                """,
+                (reply_to_anchor_id, actor, kind),
+            ).fetchall()
         return [self._row_to_fragment(row) for row in rows]
 
     def list_recent_root_fragments(
@@ -528,6 +610,7 @@ class SQLiteStore:
             anchor_id=int(row["anchor_id"]),
             parent_id=row["parent_id"],
             actor=row["actor"],
+            kind=row["kind"],
             content=row["content"],
             content_length=int(row["content_length"]),
             embedding_vector=row["embedding_vector"],

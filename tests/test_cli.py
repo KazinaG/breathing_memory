@@ -204,20 +204,34 @@ class CodexInstallTests(unittest.TestCase):
             self.assertIn("Updated AGENTS.md", message)
             updated = agents_path.read_text(encoding="utf-8")
             self.assertIn("Keep this note.", updated)
-            self.assertIn('memory_remember(actor="user")', updated)
-            self.assertIn("check `memory_recent`", updated)
-            self.assertIn("very recent `actor + content` fallback", updated)
-            self.assertIn("Keep the query in the user's language and avoid unnecessary translation.", updated)
-            self.assertIn("record that with `memory_feedback`.", updated)
-            self.assertEqual(updated.count("<!-- BEGIN BREATHING MEMORY -->"), 1)
+        self.assertIn('memory_remember(actor="user")', updated)
+        self.assertIn("check `memory_recent`", updated)
+        self.assertIn("very recent `actor + content` fallback", updated)
+        self.assertIn("Keep the query in the user's language and avoid unnecessary translation.", updated)
+        self.assertIn('`memory_search` may use `actor="user"` or `actor="agent"`', updated)
+        self.assertIn("memory_read_active_collaboration_policy(token_budget=512)", updated)
+        self.assertIn('kind="collaboration_policy"', updated)
+        self.assertIn("record that with `memory_feedback`.", updated)
+        self.assertLess(
+            updated.index("3. Call `memory_read_active_collaboration_policy(token_budget=512)`"),
+            updated.index("4. Search with `memory_search`"),
+        )
+        self.assertEqual(updated.count("<!-- BEGIN BREATHING MEMORY -->"), 1)
 
     def test_render_agents_block_uses_super_lite_guidance(self) -> None:
         block = render_agents_block(guidance_mode="super_lite")
 
         self.assertIn("Choose a query optimized for lexical retrieval.", block)
         self.assertIn("Use keyword- or phrase-oriented queries when they improve lexical retrieval.", block)
+        self.assertIn('`memory_search` may use `actor="user"` or `actor="agent"`', block)
         self.assertIn("Use `memory_recent` as the caller-side first check", block)
         self.assertIn("For `user` messages, use caller-side `memory_recent` checks", block)
+        self.assertIn("### Collaboration Policy", block)
+        self.assertIn("memory_read_active_collaboration_policy(token_budget=512)", block)
+        self.assertLess(
+            block.index("3. Call `memory_read_active_collaboration_policy(token_budget=512)`"),
+            block.index("4. Search with `memory_search`"),
+        )
         self.assertIn("### Feedback Attribution", block)
         self.assertIn("skip `memory_feedback` rather than guessing.", block)
         self.assertNotIn("Choose a query optimized for semantic retrieval.", block)
@@ -603,6 +617,7 @@ class CodexInstallTests(unittest.TestCase):
             [
                 "memory_remember",
                 "memory_search",
+                "memory_read_active_collaboration_policy",
                 "memory_fetch",
                 "memory_recent",
                 "memory_feedback",

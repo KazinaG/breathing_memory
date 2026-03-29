@@ -50,20 +50,21 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
 
         return result
 
-    async def test_tools_list_exposes_six_tools(self) -> None:
+    async def test_tools_list_exposes_seven_tools(self) -> None:
         async def callback(session: ClientSession, init: types.InitializeResult):
             tools = await session.list_tools()
             return init, tools
 
         init, tools = await self._with_session(callback)
         self.assertEqual(init.protocolVersion, types.LATEST_PROTOCOL_VERSION)
-        self.assertEqual(len(tools.tools), 6)
+        self.assertEqual(len(tools.tools), 7)
         names = {tool.name for tool in tools.tools}
         self.assertEqual(
             names,
             {
                 "memory_remember",
                 "memory_search",
+                "memory_read_active_collaboration_policy",
                 "memory_fetch",
                 "memory_recent",
                 "memory_feedback",
@@ -141,6 +142,71 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         item = result.structuredContent["items"][0]
         self.assertIn("diagnostics", item)
         self.assertEqual(item["diagnostics"]["retrieval_mode"], "super_lite")
+
+    async def test_memory_search_can_filter_by_actor(self) -> None:
+        async def callback(session: ClientSession, init: types.InitializeResult):
+            del init
+            await session.call_tool(
+                "memory_remember",
+                {
+                    "content": "shared summary",
+                    "actor": "user",
+                },
+            )
+            remembered = await session.call_tool(
+                "memory_remember",
+                {
+                    "content": "shared summary",
+                    "actor": "agent",
+                },
+            )
+            return remembered, await session.call_tool(
+                "memory_search",
+                {
+                    "query": "shared summary",
+                    "result_count": 8,
+                    "search_effort": 32,
+                    "actor": "agent",
+                },
+            )
+
+        remembered, result = await self._with_session(callback)
+        self.assertFalse(result.isError)
+        self.assertEqual(result.structuredContent["count"], 1)
+        self.assertEqual(result.structuredContent["items"][0]["id"], remembered.structuredContent["id"])
+        self.assertEqual(result.structuredContent["items"][0]["actor"], "agent")
+
+    async def test_memory_read_active_collaboration_policy_returns_budgeted_items(self) -> None:
+        async def callback(session: ClientSession, init: types.InitializeResult):
+            del init
+            await session.call_tool(
+                "memory_remember",
+                {
+                    "content": "General answer",
+                    "actor": "agent",
+                },
+            )
+            remembered = await session.call_tool(
+                "memory_remember",
+                {
+                    "content": "Detailed collaboration guidance for future turns.",
+                    "actor": "agent",
+                    "kind": "collaboration_policy",
+                },
+            )
+            result = await session.call_tool(
+                "memory_read_active_collaboration_policy",
+                {"token_budget": 1},
+            )
+            return remembered, result
+
+        remembered, result = await self._with_session(callback)
+        self.assertFalse(result.isError)
+        self.assertEqual(result.structuredContent["count"], 1)
+        item = result.structuredContent["items"][0]
+        self.assertEqual(item["id"], remembered.structuredContent["id"])
+        self.assertEqual(item["kind"], "collaboration_policy")
+        self.assertGreater(result.structuredContent["used_token_budget"], 1)
 
     async def test_memory_remember_rejects_unknown_reply_to(self) -> None:
         async def callback(session: ClientSession, init: types.InitializeResult):

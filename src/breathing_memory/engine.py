@@ -28,6 +28,7 @@ def clamp(value: float, minimum: float, maximum: float) -> float:
 LEXICAL_SEPARATOR_PATTERN = re.compile(r"[`'\"/\\._\-,:;!?()[\]{}<>|*+=~@#$%^&]+|[、。・「」『』【】（）！？：；　]+")
 WHITESPACE_PATTERN = re.compile(r"\s+")
 SEARCH_TERM_PATTERN = re.compile(r"[0-9a-z]+|[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+")
+COLLABORATION_POLICY_KIND = "collaboration_policy"
 
 
 class BreathingMemoryEngine:
@@ -57,6 +58,7 @@ class BreathingMemoryEngine:
         actor: str,
         reply_to: Optional[int] = None,
         source_fragment_ids: Optional[Iterable[int]] = None,
+        kind: Optional[str] = None,
     ) -> dict:
         if actor not in {"user", "agent"}:
             raise ValueError("actor must be 'user' or 'agent'")
@@ -65,6 +67,7 @@ class BreathingMemoryEngine:
         if reply_to is not None and not self.store.anchor_exists(reply_to):
             raise ValueError("reply_to anchor not found")
 
+        normalized_kind = self._normalize_kind(kind)
         normalized_sources = self._normalize_source_fragment_ids(source_fragment_ids)
         self._validate_source_fragment_ids(normalized_sources)
 
@@ -72,6 +75,7 @@ class BreathingMemoryEngine:
             actor=actor,
             content=content,
             reply_to=reply_to,
+            kind=normalized_kind,
         )
         if duplicate_fragment is not None:
             self._merge_material_references(
@@ -89,6 +93,7 @@ class BreathingMemoryEngine:
             anchor_id=anchor_id,
             parent_id=None,
             actor=actor,
+            kind=normalized_kind,
             content=content,
             embedding_vector=self._embed_content(content),
             layer="working",
@@ -149,10 +154,14 @@ class BreathingMemoryEngine:
         query: str,
         result_count: Optional[int] = None,
         search_effort: Optional[int] = None,
+        actor: Optional[str] = None,
+        kind: Optional[str] = None,
         include_diagnostics: bool = False,
     ) -> dict:
         normalized_result_count = self._normalize_result_count(result_count)
         normalized_search_effort = self._normalize_search_effort(search_effort)
+        normalized_actor = self._normalize_actor_filter(actor)
+        normalized_kind = self._normalize_kind(kind)
         retrieval_mode = self._resolve_retrieval_mode()
 
         normalized_query = self._normalize_lexical_text(query)
@@ -160,6 +169,8 @@ class BreathingMemoryEngine:
         if not normalized_query:
             return self._search_by_search_priority(
                 normalized_result_count,
+                actor=normalized_actor,
+                kind=normalized_kind,
                 retrieval_mode=retrieval_mode,
                 include_diagnostics=include_diagnostics,
             )
@@ -168,6 +179,8 @@ class BreathingMemoryEngine:
             return self._semantic_search(
                 query,
                 normalized_result_count,
+                actor=normalized_actor,
+                kind=normalized_kind,
                 retrieval_mode="default",
                 search_effort=normalized_search_effort,
                 include_diagnostics=include_diagnostics,
@@ -176,12 +189,14 @@ class BreathingMemoryEngine:
             return self._semantic_search(
                 query,
                 normalized_result_count,
+                actor=normalized_actor,
+                kind=normalized_kind,
                 retrieval_mode="lite",
                 search_effort=normalized_search_effort,
                 include_diagnostics=include_diagnostics,
             )
 
-        fragments = self.store.list_fragments()
+        fragments = self.store.list_fragments(actor=normalized_actor, kind=normalized_kind)
         lexical_matches: list[tuple[Fragment, tuple[int, int, int, float]]] = []
         if normalized_query:
             for fragment in fragments:
@@ -211,6 +226,47 @@ class BreathingMemoryEngine:
             for fragment, lexical_rank in lexical_matches[:normalized_result_count]
         ]
         return {"items": items, "count": len(items)}
+
+    def read_active_collaboration_policy(
+        self,
+        *,
+        token_budget: Optional[int] = None,
+    ) -> dict:
+        normalized_token_budget = self._normalize_token_budget(token_budget)
+        fragments = self.store.list_fragments(kind=COLLABORATION_POLICY_KIND)
+        ordered_fragments = self._sort_fragments_by_search_priority(fragments)
+        if not ordered_fragments:
+            return {
+                "items": [],
+                "count": 0,
+                "token_budget": normalized_token_budget,
+                "used_token_budget": 0,
+                "truncated": False,
+            }
+
+        items: list[dict] = []
+        used_token_budget = 0
+        truncated = False
+        for fragment in ordered_fragments:
+            estimated_tokens = self._estimate_token_count(fragment.content)
+            if items and used_token_budget + estimated_tokens > normalized_token_budget:
+                truncated = True
+                break
+            if not items and estimated_tokens > normalized_token_budget:
+                items.append(self._serialize_search_item(fragment))
+                used_token_budget += estimated_tokens
+                truncated = len(ordered_fragments) > 1
+                break
+            items.append(self._serialize_search_item(fragment))
+            used_token_budget += estimated_tokens
+
+        return {
+            "items": items,
+            "count": len(items),
+            "token_budget": normalized_token_budget,
+            "used_token_budget": used_token_budget,
+            "truncated": truncated,
+        }
 
     def fetch(
         self,
@@ -304,18 +360,24 @@ class BreathingMemoryEngine:
         query: str,
         result_count: int,
         *,
+        actor: Optional[str],
+        kind: Optional[str],
         retrieval_mode: str,
         search_effort: int,
         include_diagnostics: bool = False,
     ) -> dict:
         if self.embedding_backend is None:
             raise RuntimeError(f"retrieval mode '{retrieval_mode}' requires an embedding backend")
-        fragments = self.store.list_fragments()
+        fragments = self.store.list_fragments(actor=actor, kind=kind)
         if not fragments:
             return {"items": [], "count": 0}
 
         self._ensure_fragment_embeddings(fragments)
-        embedded_fragments = [fragment for fragment in self.store.list_fragments() if fragment.embedding_vector is not None]
+        embedded_fragments = [
+            fragment
+            for fragment in self.store.list_fragments(actor=actor, kind=kind)
+            if fragment.embedding_vector is not None
+        ]
         if not embedded_fragments:
             return {"items": [], "count": 0}
 
@@ -437,11 +499,14 @@ class BreathingMemoryEngine:
         self,
         result_count: int,
         *,
+        actor: Optional[str],
+        kind: Optional[str],
         retrieval_mode: str,
         include_diagnostics: bool = False,
     ) -> dict:
-        fragments = self.store.list_fragments()
-        fragments.sort(key=lambda fragment: (-self._search_priority(fragment.id), fragment.id))
+        fragments = self._sort_fragments_by_search_priority(
+            self.store.list_fragments(actor=actor, kind=kind)
+        )
         items = [
             self._serialize_search_item(
                 fragment,
@@ -474,6 +539,19 @@ class BreathingMemoryEngine:
             raise ValueError("search_effort must be 32 * 2^n")
         return value
 
+    def _normalize_token_budget(self, token_budget: Optional[int]) -> int:
+        value = 512 if token_budget is None else int(token_budget)
+        if value <= 0:
+            raise ValueError("token_budget must be a positive integer")
+        return value
+
+    def _normalize_actor_filter(self, actor: Optional[str]) -> Optional[str]:
+        if actor is None:
+            return None
+        if actor not in {"user", "agent"}:
+            raise ValueError("actor must be 'user' or 'agent'")
+        return actor
+
     def _normalize_source_fragment_ids(self, source_fragment_ids: Optional[Iterable[int]]) -> list[int]:
         if source_fragment_ids is None:
             return []
@@ -489,6 +567,14 @@ class BreathingMemoryEngine:
 
     def _normalize_dedup_content(self, content: str) -> str:
         return content.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    def _normalize_kind(self, kind: Optional[str]) -> Optional[str]:
+        if kind is None:
+            return None
+        normalized = str(kind).strip()
+        if not normalized:
+            raise ValueError("kind must not be blank")
+        return normalized
 
     def _embed_content(self, content: str) -> Optional[bytes]:
         if self.embedding_backend is None:
@@ -522,12 +608,17 @@ class BreathingMemoryEngine:
         actor: str,
         content: str,
         reply_to: Optional[int],
+        kind: Optional[str],
     ) -> Optional[Fragment]:
         if actor != "agent" or reply_to is None:
             return None
 
         normalized_content = self._normalize_dedup_content(content)
-        for candidate in self.store.list_root_fragments_replying_to_anchor(reply_to, actor=actor):
+        for candidate in self.store.list_root_fragments_replying_to_anchor(
+            reply_to,
+            actor=actor,
+            kind=kind,
+        ):
             if self._normalize_dedup_content(candidate.content) == normalized_content:
                 return candidate
         return None
@@ -630,6 +721,7 @@ class BreathingMemoryEngine:
             anchor_id=candidate.anchor_id,
             parent_id=candidate.id,
             actor=candidate.actor,
+            kind=candidate.kind,
             content=result.content,
             embedding_vector=self._embed_content(result.content),
             layer="working",
@@ -805,6 +897,14 @@ class BreathingMemoryEngine:
             if fragment.layer == layer
         )
 
+    def _estimate_token_count(self, content: str) -> int:
+        return max(1, math.ceil(self._content_size(content) / 4))
+
+    def _sort_fragments_by_search_priority(self, fragments: Iterable[Fragment]) -> list[Fragment]:
+        ordered = list(fragments)
+        ordered.sort(key=lambda fragment: (-self._search_priority(fragment.id), fragment.id))
+        return ordered
+
     def _recent_sequence_metrics(self) -> list:
         metrics = self.store.list_sequence_metrics()
         return metrics[-self.tuning.rate_window_size :]
@@ -818,6 +918,7 @@ class BreathingMemoryEngine:
             "id": fragment.id,
             "anchor_id": fragment.anchor_id,
             "reply_to": anchor.replies_to_anchor_id,
+            "kind": fragment.kind,
             "content": fragment.content,
             "content_length": fragment.content_length,
             "layer": fragment.layer,
@@ -840,6 +941,7 @@ class BreathingMemoryEngine:
             "parent_id": fragment.parent_id,
             "actor": fragment.actor,
             "reply_to": anchor.replies_to_anchor_id,
+            "kind": fragment.kind,
             "content": fragment.content,
             "content_length": fragment.content_length,
             "layer": fragment.layer,

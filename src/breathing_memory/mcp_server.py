@@ -17,6 +17,7 @@ SERVER_NAME = "breathing-memory"
 SERVER_INSTRUCTIONS = (
     "Breathing Memory provides tools for persisting and retrieving collaboration memory. "
     "Use memory_remember to persist a turn, memory_search to retrieve relevant fragments, "
+    "memory_read_active_collaboration_policy to load collaboration-policy fragments before answering, "
     "memory_fetch for direct lookup, memory_recent to inspect the latest remembered root fragments, "
     "memory_feedback to record evaluation, and memory_stats for diagnostics."
 )
@@ -43,6 +44,7 @@ def _tool_definitions() -> list[types.Tool]:
                     "actor": {"type": "string", "enum": ["user", "agent"]},
                     "reply_to": {"type": ["integer", "null"]},
                     "source_fragment_ids": {"type": "array", "items": {"type": "integer"}},
+                    "kind": {"type": ["string", "null"]},
                 },
                 "required": ["content", "actor"],
             },
@@ -56,9 +58,21 @@ def _tool_definitions() -> list[types.Tool]:
                     "query": {"type": "string"},
                     "result_count": {"type": "integer", "minimum": 8},
                     "search_effort": {"type": "integer", "minimum": 32},
+                    "actor": {"type": "string", "enum": ["user", "agent"]},
+                    "kind": {"type": ["string", "null"]},
                     "include_diagnostics": {"type": "boolean"},
                 },
                 "required": ["query"],
+            },
+        ),
+        types.Tool(
+            name="memory_read_active_collaboration_policy",
+            description="Load active collaboration-policy fragments within a token budget.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "token_budget": {"type": "integer", "minimum": 1},
+                },
             },
         ),
         types.Tool(
@@ -111,6 +125,7 @@ def _remember_handler(engine: BreathingMemoryEngine, arguments: dict[str, Any]) 
         actor=str(arguments["actor"]),
         reply_to=arguments.get("reply_to"),
         source_fragment_ids=arguments.get("source_fragment_ids"),
+        kind=arguments.get("kind"),
     )
 
 
@@ -119,7 +134,18 @@ def _search_handler(engine: BreathingMemoryEngine, arguments: dict[str, Any]) ->
         query=str(arguments["query"]),
         result_count=arguments.get("result_count"),
         search_effort=arguments.get("search_effort"),
+        actor=arguments.get("actor"),
+        kind=arguments.get("kind"),
         include_diagnostics=bool(arguments.get("include_diagnostics", False)),
+    )
+
+
+def _read_active_collaboration_policy_handler(
+    engine: BreathingMemoryEngine,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    return engine.read_active_collaboration_policy(
+        token_budget=arguments.get("token_budget"),
     )
 
 
@@ -154,6 +180,7 @@ def _stats_handler(engine: BreathingMemoryEngine, arguments: dict[str, Any]) -> 
 TOOL_HANDLERS: dict[str, ToolHandler] = {
     "memory_remember": _remember_handler,
     "memory_search": _search_handler,
+    "memory_read_active_collaboration_policy": _read_active_collaboration_policy_handler,
     "memory_fetch": _fetch_handler,
     "memory_recent": _recent_handler,
     "memory_feedback": _feedback_handler,
