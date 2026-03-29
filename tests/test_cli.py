@@ -211,6 +211,7 @@ class CodexInstallTests(unittest.TestCase):
         self.assertIn('`memory_search` may use `actor="user"` or `actor="agent"`', updated)
         self.assertIn("memory_read_active_collaboration_policy(token_budget=512)", updated)
         self.assertIn('kind="collaboration_policy"', updated)
+        self.assertIn("may confirm it with the user before relying on it.", updated)
         self.assertIn("record that with `memory_feedback`.", updated)
         self.assertLess(
             updated.index("3. Call `memory_read_active_collaboration_policy(token_budget=512)`"),
@@ -228,6 +229,7 @@ class CodexInstallTests(unittest.TestCase):
         self.assertIn("For `user` messages, use caller-side `memory_recent` checks", block)
         self.assertIn("### Collaboration Policy", block)
         self.assertIn("memory_read_active_collaboration_policy(token_budget=512)", block)
+        self.assertIn("may confirm it with the user before relying on it.", block)
         self.assertLess(
             block.index("3. Call `memory_read_active_collaboration_policy(token_budget=512)`"),
             block.index("4. Search with `memory_search`"),

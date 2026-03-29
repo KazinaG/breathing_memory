@@ -16,7 +16,7 @@ The runtime behaves like a normal user-level application, so its default SQLite 
 
 ### Why capture is explicit MCP rather than runtime-log import
 
-Explicit MCP calls make remembered input intentional and inspectable. Codex runtime artifacts such as archived JSONL files are implementation details and are too unstable to serve as the primary operating path.
+Explicit MCP calls make remembered input intentional and inspectable. Runtime artifacts such as archived JSONL files are implementation details and are too unstable to serve as the primary operating path.
 
 ## Representation Choices
 
@@ -30,7 +30,7 @@ Forgotten fragments are physically purged instead of being kept as soft-deleted 
 
 ### Why edits are modeled as forks
 
-Editing an earlier Codex message is treated as creating a new branch, not overwriting the old one. Overwrite semantics would rewrite past references, feedback, and compression outcomes. A fork preserves append-order history and keeps prior branches inspectable.
+Editing an earlier agent message is treated as creating a new branch, not overwriting the old one. Overwrite semantics would rewrite past references, feedback, and compression outcomes. A fork preserves append-order history and keeps prior branches inspectable.
 
 ## Retrieval And Attribution
 
@@ -40,7 +40,7 @@ Search hits alone are predictions. Breathing Memory records a reference only whe
 
 ### Why feedback attribution is delegated to the agent
 
-User replies often evaluate either the immediately preceding answer, one of the remembered fragments used in that answer, or both. A rigid fixed rule would misattribute many cases. Letting Codex attribute feedback keeps the system aligned with future model improvements.
+User replies often evaluate either the immediately preceding answer, one of the remembered fragments used in that answer, or both. A rigid fixed rule would misattribute many cases. Letting the agent attribute feedback keeps the system aligned with future model improvements.
 
 ### Why observation wins over retrieval prediction
 

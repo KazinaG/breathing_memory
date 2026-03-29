@@ -9,11 +9,11 @@ AGENTS_BLOCK_START = "<!-- BEGIN BREATHING MEMORY -->"
 AGENTS_BLOCK_END = "<!-- END BREATHING MEMORY -->"
 AGENTS_BLOCK_PREFIX = """## Breathing Memory
 
-This repository uses Breathing Memory during Codex work.
+This repository uses Breathing Memory during agent work in this repository.
 
 ### Required Flow
 
-For every user turn in this repository, Codex must use the MCP tools in this order:
+For every user turn in this repository, the agent must use the MCP tools in this order:
 
 1. If the immediately previous final agent answer has not yet been remembered, check `memory_recent` for the latest remembered `agent` fragment with the same `reply_to`; if the latest remembered fragment already has the same content, skip the duplicate save, otherwise save it with `memory_remember(actor="agent")`
 2. Check `memory_recent` before saving the current user message; use `reply_to + content` as the first duplicate check, and if needed use a very recent `actor + content` fallback before calling `memory_remember(actor="user")`
@@ -34,7 +34,7 @@ For a root user message, omit `reply_to`.
 - `memory_remember` suppresses duplicate deferred `agent` capture for the same `reply_to` and content, but callers must still pass accurate `reply_to` values and capture timing.
 - For `user` messages, use caller-side `memory_recent` checks before `memory_remember` instead of relying on engine-side duplicate suppression.
 - If no later user turn arrives, the final agent answer may remain unremembered.
-- When a reusable rule about how to collaborate with the user becomes clear, Codex may save one or more derived `agent` fragments with `kind="collaboration_policy"`.
+- When a reusable rule about how to collaborate with the user becomes clear, the agent may save one or more derived `agent` fragments with `kind="collaboration_policy"`.
 - Keep each `collaboration_policy` fragment focused on a single reusable rule.
 - Use the same `reply_to` as the current turn's user anchor, but treat these fragments as derived policy memory rather than conversational threading.
 
@@ -72,6 +72,7 @@ AGENTS_BLOCK_SUFFIX = """
 
 - Use `memory_read_active_collaboration_policy(token_budget=512)` to preload collaboration-policy memory before forming the task query and answering.
 - Use collaboration-policy memory to shape how to answer or proceed, not as a substitute for task-memory retrieval.
+- If remembered collaboration context seems relevant but uncertain, the agent may confirm it with the user before relying on it.
 - If needed, run an additional `memory_search(..., kind="collaboration_policy")` for targeted clarification.
 
 ### Feedback Attribution
@@ -84,7 +85,7 @@ AGENTS_BLOCK_SUFFIX = """
 
 - Do not fabricate remembered ids such as `reply_to` or `source_fragment_ids`.
 - If semantic-index mode is enabled and the semantic index is being rebuilt or recovered, do not issue other Breathing Memory mutations or semantic searches until that rebuild completes.
-- `archived_sessions/*.jsonl` and other Codex runtime files are not the primary capture path. They are internal implementation details and must not be used as the default memory source.
+- `archived_sessions/*.jsonl` and other runtime files are not the primary capture path. They are internal implementation details and must not be used as the default memory source.
 """
 
 
