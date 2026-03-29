@@ -134,10 +134,11 @@ If you want to keep memory from an older unpinned Codex registration, move the e
 
 - `BREATHING_MEMORY_DB_PATH`: explicit SQLite database path override
 - `BREATHING_MEMORY_PROJECT_ID`: explicit project identity override for storage isolation
+- `BREATHING_MEMORY_TOTAL_CAPACITY_MB`: advanced override for total remembered-fragment capacity
 
 `BREATHING_MEMORY_DB_PATH` has the highest priority. If it is set, project auto-resolution is skipped.
 
-User-facing settings such as total capacity live in `MemoryConfig` in [config.py](../src/breathing_memory/config.py). Environment variables are intentionally kept minimal and focused on storage-path overrides.
+For normal use, prefer the CLI option `breathing-memory install-codex --total-capacity-mb ...` over setting `BREATHING_MEMORY_TOTAL_CAPACITY_MB` directly. The environment variable exists as an advanced override for testing, constrained environments, and debugging.
 
 ## MCP Tool Surface
 

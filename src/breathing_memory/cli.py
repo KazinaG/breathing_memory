@@ -19,7 +19,7 @@ from .agents_template import (
     resolve_agents_guidance_mode,
     semantic_extra_available,
 )
-from .config import MemoryConfig
+from .config import MemoryConfig, TOTAL_CAPACITY_MB_ENV_VAR, resolve_total_capacity_mb
 from .engine import BreathingMemoryEngine
 from .mcp_server import serve_stdio_server
 from .runtime import (
@@ -42,6 +42,16 @@ class CLIError(RuntimeError):
     pass
 
 
+def _positive_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive number") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive number")
+    return parsed
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -51,7 +61,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             serve()
             return 0
         if command == "install-codex":
-            message = install_codex_registration()
+            message = install_codex_registration(total_capacity_mb=args.total_capacity_mb)
             print(message)
             return 0
         if command == "inspect-memory":
@@ -77,7 +87,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("serve", help="Run the MCP server over stdio.")
-    subparsers.add_parser("install-codex", help="Register the MCP server with Codex.")
+    install_parser = subparsers.add_parser("install-codex", help="Register the MCP server with Codex.")
+    install_parser.add_argument(
+        "--total-capacity-mb",
+        type=_positive_float,
+        help="Advanced override for the total remembered-fragment capacity used by the registered MCP server.",
+    )
     inspect_parser = subparsers.add_parser(
         "inspect-memory",
         help="Inspect remembered fragments with a compact diagnostic report.",
@@ -99,11 +114,13 @@ def install_codex_registration(
     runner: Any = subprocess.run,
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
+    total_capacity_mb: float | None = None,
 ) -> str:
     command_env = dict(os.environ if env is None else env)
+    if total_capacity_mb is not None:
+        command_env[TOTAL_CAPACITY_MB_ENV_VAR] = _format_total_capacity_mb(total_capacity_mb)
     working_directory = Path.cwd() if cwd is None else Path(cwd)
-    registration_binding = resolve_codex_registration_binding(cwd=working_directory, env=command_env)
-    registration_env = registration_binding["env"]
+    registration_env = resolve_codex_registration_env(cwd=working_directory, env=command_env)
     effective_env = dict(command_env)
     effective_env.update(registration_env)
     agents_path = working_directory / AGENTS_FILENAME
@@ -160,8 +177,9 @@ def install_codex_registration(
         post_check_message = "Post-check: Codex registration is configured."
 
     agents_message = write_agents_file(agents_path, current_agents, planned_agents)
+    registration_binding = resolve_codex_registration_binding(cwd=working_directory, env=effective_env)
     identity_source, identity_value = resolve_project_identity(cwd=working_directory, env=effective_env)
-    memory_config = MemoryConfig(db_path=resolve_db_path(cwd=working_directory, env=effective_env))
+    memory_config = resolve_memory_config(cwd=working_directory, env=effective_env)
     db_path = memory_config.db_path
     retrieval = inspect_semantic_status(memory_config)
     identity_description = describe_binding_identity(registration_binding, identity_source, identity_value)
@@ -170,6 +188,7 @@ def install_codex_registration(
         "Next steps:",
         f"- Project identity: {identity_description}",
         f"- DB path: {db_path}",
+        f"- Total capacity: {int(memory_config.total_capacity_mb * (1 << 20))} bytes ({memory_config.total_capacity_mb:g} MB)",
         f"- Effective retrieval mode: {retrieval['effective_mode']} ({retrieval['resolution_reason']})",
         "- Run `breathing-memory doctor` to verify the installation.",
         "- Open this repository in Codex and start using the registered MCP server.",
@@ -224,7 +243,7 @@ def doctor(
         base_env=command_env,
         registration_status=registration_status,
     )
-    memory_config = MemoryConfig(db_path=resolve_db_path(cwd=working_directory, env=diagnostic_env))
+    memory_config = resolve_memory_config(cwd=working_directory, env=diagnostic_env)
     identity_source, identity_value = resolve_project_identity(cwd=working_directory, env=diagnostic_env)
     db_path = memory_config.db_path
     semantic_status = inspect_semantic_status(memory_config)
@@ -685,6 +704,18 @@ def resolve_codex_registration_binding(
     }
 
 
+def resolve_codex_registration_env(
+    cwd: Path,
+    env: Mapping[str, str],
+) -> dict[str, str]:
+    binding = resolve_codex_registration_binding(cwd=cwd, env=env)
+    registration_env = dict(binding["env"])
+    total_capacity_mb = env.get(TOTAL_CAPACITY_MB_ENV_VAR, "").strip()
+    if total_capacity_mb:
+        registration_env[TOTAL_CAPACITY_MB_ENV_VAR] = total_capacity_mb
+    return registration_env
+
+
 def describe_binding_identity(binding: Mapping[str, Any], identity_source: str, identity_value: str) -> str:
     if binding.get("mode") == "auto_project_id":
         return (
@@ -716,6 +747,17 @@ def resolve_doctor_environment(
     return ("working_directory", dict(base_env))
 
 
+def resolve_memory_config(
+    *,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> MemoryConfig:
+    return MemoryConfig(
+        db_path=resolve_db_path(cwd=cwd, env=env),
+        total_capacity_mb=resolve_total_capacity_mb(env=env),
+    )
+
+
 def resolve_inspect_memory_config(
     runner: Any = subprocess.run,
     env: Mapping[str, str] | None = None,
@@ -723,7 +765,7 @@ def resolve_inspect_memory_config(
 ) -> MemoryConfig:
     command_env = dict(os.environ if env is None else env)
     if command_env.get(DB_PATH_ENV_VAR) or command_env.get(PROJECT_ID_ENV_VAR):
-        return MemoryConfig(db_path=resolve_db_path(cwd=cwd, env=command_env))
+        return resolve_memory_config(cwd=cwd, env=command_env)
 
     working_directory = Path.cwd() if cwd is None else Path(cwd)
     expected_binding = resolve_codex_registration_binding(cwd=working_directory, env=command_env)
@@ -738,7 +780,11 @@ def resolve_inspect_memory_config(
         base_env=command_env,
         registration_status=registration_status,
     )
-    return MemoryConfig(db_path=resolve_db_path(cwd=working_directory, env=resolved_env))
+    return resolve_memory_config(cwd=working_directory, env=resolved_env)
+
+
+def _format_total_capacity_mb(value: float) -> str:
+    return f"{value:g}"
 
 
 def format_subprocess_error(prefix: str, completed: Any) -> str:

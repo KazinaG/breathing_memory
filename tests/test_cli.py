@@ -20,7 +20,7 @@ from breathing_memory.cli import (
     resolve_codex_registration_binding,
     resolve_agents_guidance_mode,
 )
-from breathing_memory.config import MemoryConfig
+from breathing_memory.config import MemoryConfig, TOTAL_CAPACITY_MB_ENV_VAR
 from breathing_memory.engine import BreathingMemoryEngine
 from breathing_memory.runtime import resolve_db_path
 
@@ -349,6 +349,72 @@ class CodexInstallTests(unittest.TestCase):
                 ],
             )
 
+    def test_install_codex_registers_total_capacity_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            binding = resolve_codex_registration_binding(cwd=Path(tempdir), env={"PATH": "/usr/bin"})
+            expected_env = dict(binding["env"])
+            expected_env[TOTAL_CAPACITY_MB_ENV_VAR] = "0.5"
+            runner = FakeRunner(
+                [
+                    subprocess.CompletedProcess(
+                        ["codex", "mcp", "get", "breathing-memory", "--json"],
+                        1,
+                        "",
+                        "Error: No MCP server named 'breathing-memory' found.",
+                    ),
+                    subprocess.CompletedProcess(
+                        [
+                            "codex",
+                            "mcp",
+                            "add",
+                            "breathing-memory",
+                            "--env",
+                            f"BREATHING_MEMORY_PROJECT_ID={binding['env']['BREATHING_MEMORY_PROJECT_ID']}",
+                            "--env",
+                            f"{TOTAL_CAPACITY_MB_ENV_VAR}=0.5",
+                            "--",
+                            "breathing-memory",
+                            "serve",
+                        ],
+                        0,
+                        "",
+                        "",
+                    ),
+                    subprocess.CompletedProcess(
+                        ["codex", "mcp", "get", "breathing-memory", "--json"],
+                        0,
+                        registration_stdout(expected_env),
+                        "",
+                    ),
+                ]
+            )
+
+            with patch("breathing_memory.cli.shutil.which", return_value="/usr/bin/codex"):
+                message = install_codex_registration(
+                    runner=runner,
+                    env={"PATH": "/usr/bin"},
+                    cwd=Path(tempdir),
+                    total_capacity_mb=0.5,
+                )
+
+            self.assertEqual(
+                runner.calls[1][0],
+                [
+                    "codex",
+                    "mcp",
+                    "add",
+                    "breathing-memory",
+                    "--env",
+                    f"BREATHING_MEMORY_PROJECT_ID={binding['env']['BREATHING_MEMORY_PROJECT_ID']}",
+                    "--env",
+                    f"{TOTAL_CAPACITY_MB_ENV_VAR}=0.5",
+                    "--",
+                    "breathing-memory",
+                    "serve",
+                ],
+            )
+            self.assertIn("Total capacity: 524288 bytes (0.5 MB)", message)
+
     def test_resolve_agents_guidance_mode_prefers_semantic_when_available_in_auto(self) -> None:
         self.assertEqual(resolve_agents_guidance_mode(retrieval_mode="auto", semantic_available=True), "semantic")
         self.assertEqual(resolve_agents_guidance_mode(retrieval_mode="auto", semantic_available=False), "super_lite")
@@ -479,7 +545,25 @@ class CodexInstallTests(unittest.TestCase):
             ],
         )
 
-    def test_doctor_uses_memory_config_capacity_instead_of_env_override(self) -> None:
+    def test_doctor_reports_total_capacity_env_override(self) -> None:
+        report = json.loads(
+            doctor(
+                json_output=True,
+                env={
+                    "PATH": "",
+                    TOTAL_CAPACITY_MB_ENV_VAR: "0.5",
+                },
+                cwd=Path("/workspace"),
+            )
+        )
+
+        self.assertEqual(report["total_capacity_mb"], 0.5)
+        self.assertEqual(report["total_capacity"], int(0.5 * (1 << 20)))
+        self.assertIn("retrieval", report)
+        self.assertEqual(report["retrieval"]["configured_mode"], "auto")
+        self.assertIn(report["retrieval"]["effective_mode"], {"super_lite", "lite"})
+
+    def test_doctor_ignores_legacy_total_capacity_env_name(self) -> None:
         report = json.loads(
             doctor(
                 json_output=True,
@@ -493,9 +577,6 @@ class CodexInstallTests(unittest.TestCase):
 
         self.assertEqual(report["total_capacity_mb"], MemoryConfig().total_capacity_mb)
         self.assertEqual(report["total_capacity"], int(MemoryConfig().total_capacity_mb * (1 << 20)))
-        self.assertIn("retrieval", report)
-        self.assertEqual(report["retrieval"]["configured_mode"], "auto")
-        self.assertIn(report["retrieval"]["effective_mode"], {"super_lite", "lite"})
 
     def test_doctor_reports_matching_codex_registration(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
