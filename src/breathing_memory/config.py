@@ -42,3 +42,4 @@ class EngineTuning:
     epsilon: float = 1e-9
     default_result_count: int = 8
     default_search_effort: int = 32
+    ann_wait_timeout_ms: int = 500

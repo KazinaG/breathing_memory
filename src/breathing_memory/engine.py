@@ -10,6 +10,7 @@ from typing import Iterable, Optional
 from .ann import ApproximateNearestNeighborIndex, HnswIndex
 from .compression import CodexExecCompressionBackend, CompressionBackend
 from .config import EngineTuning, MemoryConfig
+from .maintenance import AnnMaintenanceCoordinator
 from .embeddings import (
     EmbeddingBackend,
     cosine_similarity,
@@ -31,6 +32,12 @@ SEARCH_TERM_PATTERN = re.compile(r"[0-9a-z]+|[\u3040-\u30ff\u3400-\u4dbf\u4e00-\
 COLLABORATION_POLICY_KIND = "collaboration_policy"
 
 
+class SearchStatusError(RuntimeError):
+    def __init__(self, status: dict):
+        super().__init__(status.get("code", "search_status"))
+        self.status = status
+
+
 class BreathingMemoryEngine:
     def __init__(
         self,
@@ -48,6 +55,7 @@ class BreathingMemoryEngine:
         self.compression_backend = compression_backend or CodexExecCompressionBackend()
         self.embedding_backend = embedding_backend or try_create_default_embedding_backend()
         self.ann_index = ann_index or HnswIndex(Path(self.config.db_path))
+        self._ann_maintenance = AnnMaintenanceCoordinator(Path(self.config.db_path))
 
     def close(self) -> None:
         self.store.close()
@@ -346,11 +354,7 @@ class BreathingMemoryEngine:
         if self.config.retrieval_mode == "auto":
             if self.embedding_backend is None:
                 return "super_lite"
-            ann_status = self.ann_index.inspect(
-                fragment_ids=[fragment.id for fragment in self.store.list_fragments()],
-                embedding_model=self.config.embedding_model,
-            )
-            if ann_status.get("ready"):
+            if self.ann_index.support_available():
                 return "default"
             return "lite"
         return self.config.retrieval_mode
@@ -372,7 +376,14 @@ class BreathingMemoryEngine:
         if not fragments:
             return {"items": [], "count": 0}
 
-        self._ensure_fragment_embeddings(fragments)
+        try:
+            self._ensure_fragment_embeddings(
+                fragments,
+                timeout_ms=self.tuning.ann_wait_timeout_ms,
+                current_mode="lite" if retrieval_mode == "default" else retrieval_mode,
+            )
+        except SearchStatusError as exc:
+            return self._status_response(exc.status)
         embedded_fragments = [
             fragment
             for fragment in self.store.list_fragments(actor=actor, kind=kind)
@@ -382,19 +393,22 @@ class BreathingMemoryEngine:
             return {"items": [], "count": 0}
 
         query_vector = self.embedding_backend.embed_texts([query])[0]
-        if retrieval_mode == "default":
-            semantic_candidates = self._default_semantic_candidates(
-                embedded_fragments=embedded_fragments,
-                query_vector=query_vector,
-                result_count=result_count,
-                search_effort=search_effort,
-            )
-        else:
-            semantic_candidates = self._lite_semantic_candidates(
-                embedded_fragments=embedded_fragments,
-                query_vector=query_vector,
-                result_count=result_count,
-            )
+        try:
+            if retrieval_mode == "default":
+                semantic_candidates = self._default_semantic_candidates(
+                    embedded_fragments=embedded_fragments,
+                    query_vector=query_vector,
+                    result_count=result_count,
+                    search_effort=search_effort,
+                )
+            else:
+                semantic_candidates = self._lite_semantic_candidates(
+                    embedded_fragments=embedded_fragments,
+                    query_vector=query_vector,
+                    result_count=result_count,
+                )
+        except SearchStatusError as exc:
+            return self._status_response(exc.status)
         return self._rerank_semantic_candidates(
             semantic_candidates=semantic_candidates,
             retrieval_mode=retrieval_mode,
@@ -438,23 +452,23 @@ class BreathingMemoryEngine:
             for fragment in embedded_fragments
             if fragment.embedding_vector is not None
         }
-        self.ann_index.ensure_ready(
-            vectors_by_fragment_id=vectors_by_fragment_id,
-            embedding_model=self.config.embedding_model,
-        )
+        self._ensure_ann_ready_for_search(vectors_by_fragment_id)
         fragments_by_id = {fragment.id: fragment for fragment in embedded_fragments}
         semantic_candidates: list[tuple[Fragment, float]] = []
-        for fragment_id in self.ann_index.query(
-            vector=query_vector,
-            limit=result_count,
-            search_effort=search_effort,
-        ):
-            fragment = fragments_by_id.get(fragment_id)
-            if fragment is None or fragment.embedding_vector is None:
-                continue
-            similarity = cosine_similarity(query_vector, unpack_embedding(fragment.embedding_vector))
-            semantic_similarity = (similarity + 1.0) / 2.0
-            semantic_candidates.append((fragment, semantic_similarity))
+        with self._ann_maintenance.acquire_shared(timeout_ms=self.tuning.ann_wait_timeout_ms) as acquired:
+            if not acquired:
+                raise SearchStatusError(self._ann_maintenance.read_status(current_mode="lite"))
+            for fragment_id in self.ann_index.query(
+                vector=query_vector,
+                limit=result_count,
+                search_effort=search_effort,
+            ):
+                fragment = fragments_by_id.get(fragment_id)
+                if fragment is None or fragment.embedding_vector is None:
+                    continue
+                similarity = cosine_similarity(query_vector, unpack_embedding(fragment.embedding_vector))
+                semantic_similarity = (similarity + 1.0) / 2.0
+                semantic_candidates.append((fragment, semantic_similarity))
         return semantic_candidates
 
     def _rerank_semantic_candidates(
@@ -582,16 +596,40 @@ class BreathingMemoryEngine:
         vector = self.embedding_backend.embed_texts([content])[0]
         return pack_embedding(vector)
 
-    def _ensure_fragment_embeddings(self, fragments: Iterable[Fragment]) -> None:
+    def _ensure_fragment_embeddings(
+        self,
+        fragments: Iterable[Fragment],
+        *,
+        timeout_ms: int | None = None,
+        current_mode: str = "lite",
+    ) -> None:
         if self.embedding_backend is None:
             return
         missing = [fragment for fragment in fragments if fragment.embedding_vector is None]
         if not missing:
             return
-        vectors = self.embedding_backend.embed_texts([fragment.content for fragment in missing])
-        for fragment, vector in zip(missing, vectors):
-            self.store.update_fragment_embedding(fragment.id, pack_embedding(vector))
-        self._rebuild_ann_index()
+        with self._ann_maintenance.acquire_exclusive(timeout_ms=timeout_ms) as acquired:
+            if not acquired:
+                raise SearchStatusError(self._ann_maintenance.read_status(current_mode=current_mode))
+            current_fragments = {fragment.id: fragment for fragment in self.store.list_fragments()}
+            current_missing = [
+                current_fragments[fragment.id]
+                for fragment in missing
+                if fragment.id in current_fragments and current_fragments[fragment.id].embedding_vector is None
+            ]
+            if not current_missing:
+                return
+            with self._ann_maintenance.active_status(
+                code="rebuild_in_progress",
+                phase="embedding_backfill",
+                fragment_count=len(current_missing),
+                current_mode=current_mode,
+                suggested_action="retry",
+            ):
+                vectors = self.embedding_backend.embed_texts([fragment.content for fragment in current_missing])
+                for fragment, vector in zip(current_missing, vectors):
+                    self.store.update_fragment_embedding(fragment.id, pack_embedding(vector))
+                self._rebuild_ann_index_locked(self.store.list_fragments())
 
     def _normalize_search_priorities(self, priorities: list[float]) -> list[float]:
         if not priorities:
@@ -751,35 +789,49 @@ class BreathingMemoryEngine:
     def _sync_ann_index_for_new_fragment(self, fragment_id: int) -> None:
         if self.embedding_backend is None or not self.ann_index.support_available():
             return
-        fragment = self.store.get_fragment(fragment_id)
-        if fragment is None or fragment.embedding_vector is None:
-            return
-        fragments = self.store.list_fragments()
-        status = self.ann_index.inspect(
-            fragment_ids=[item.id for item in fragments if item.id != fragment_id],
-            embedding_model=self.config.embedding_model,
-        )
-        if not status.get("ready"):
-            self._rebuild_ann_index(fragments)
-            return
-        try:
-            self.ann_index.append(
-                fragment_id=fragment.id,
-                vector=unpack_embedding(fragment.embedding_vector),
+        with self._ann_maintenance.acquire_exclusive() as acquired:
+            if not acquired:  # pragma: no cover
+                return
+            fragment = self.store.get_fragment(fragment_id)
+            if fragment is None or fragment.embedding_vector is None:
+                return
+            fragments = self.store.list_fragments()
+            status = self.ann_index.inspect(
+                fragment_ids=[item.id for item in fragments if item.id != fragment_id],
                 embedding_model=self.config.embedding_model,
             )
-        except Exception:
-            self._rebuild_ann_index(fragments)
+            if not status.get("ready"):
+                self._rebuild_ann_index_locked(fragments)
+                return
+            try:
+                self.ann_index.append(
+                    fragment_id=fragment.id,
+                    vector=unpack_embedding(fragment.embedding_vector),
+                    embedding_model=self.config.embedding_model,
+                )
+            except Exception:
+                self._rebuild_ann_index_locked(fragments)
 
     def _remove_from_ann_index(self, fragment_id: int) -> None:
         if self.embedding_backend is None or not self.ann_index.support_available():
             return
-        try:
-            self.ann_index.remove(fragment_id)
-        except Exception:
-            self._rebuild_ann_index()
+        with self._ann_maintenance.acquire_exclusive() as acquired:
+            if not acquired:  # pragma: no cover
+                return
+            try:
+                self.ann_index.remove(fragment_id)
+            except Exception:
+                self._rebuild_ann_index_locked()
 
     def _rebuild_ann_index(self, fragments: Optional[list[Fragment]] = None) -> None:
+        if self.embedding_backend is None or not self.ann_index.support_available():
+            return
+        with self._ann_maintenance.acquire_exclusive() as acquired:
+            if not acquired:  # pragma: no cover
+                return
+            self._rebuild_ann_index_locked(fragments)
+
+    def _rebuild_ann_index_locked(self, fragments: Optional[list[Fragment]] = None) -> None:
         if self.embedding_backend is None or not self.ann_index.support_available():
             return
         current_fragments = self.store.list_fragments() if fragments is None else fragments
@@ -792,6 +844,55 @@ class BreathingMemoryEngine:
             vectors_by_fragment_id=vectors_by_fragment_id,
             embedding_model=self.config.embedding_model,
         )
+
+    def _ensure_ann_ready_for_search(self, vectors_by_fragment_id: dict[int, list[float]]) -> None:
+        status = self.ann_index.inspect(
+            fragment_ids=vectors_by_fragment_id.keys(),
+            embedding_model=self.config.embedding_model,
+        )
+        if status.get("ready"):
+            return
+        with self._ann_maintenance.acquire_exclusive(timeout_ms=self.tuning.ann_wait_timeout_ms) as acquired:
+            if not acquired:
+                raise SearchStatusError(self._ann_maintenance.read_status(current_mode="lite"))
+            status = self.ann_index.inspect(
+                fragment_ids=vectors_by_fragment_id.keys(),
+                embedding_model=self.config.embedding_model,
+            )
+            if status.get("ready"):
+                return
+            try:
+                with self._ann_maintenance.active_status(
+                    code="rebuild_in_progress",
+                    phase="ann_rebuild",
+                    fragment_count=len(vectors_by_fragment_id),
+                    current_mode="lite",
+                    suggested_action="retry",
+                ):
+                    self.ann_index.ensure_ready(
+                        vectors_by_fragment_id=vectors_by_fragment_id,
+                        embedding_model=self.config.embedding_model,
+                    )
+            except Exception:
+                raise SearchStatusError(self._ann_unavailable_status(reason="rebuild_failed"))
+            status = self.ann_index.inspect(
+                fragment_ids=vectors_by_fragment_id.keys(),
+                embedding_model=self.config.embedding_model,
+            )
+            if not status.get("ready"):
+                raise SearchStatusError(self._ann_unavailable_status(reason="rebuild_failed"))
+
+    def _ann_unavailable_status(self, *, reason: str) -> dict:
+        return {
+            "code": "ann_unavailable",
+            "retryable": False,
+            "reason": reason,
+            "current_mode": "lite",
+            "suggested_action": "fallback_or_surface_error",
+        }
+
+    def _status_response(self, status: dict) -> dict:
+        return {"items": [], "count": 0, "status": status}
 
     def _select_compression_candidate(self, protected_fragment_ids: set[int]) -> Optional[Fragment]:
         fragments = [

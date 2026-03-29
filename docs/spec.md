@@ -358,8 +358,8 @@ Runtime selection:
 
 - the runtime keeps a retrieval-mode setting
 - the default setting is `auto`
-- in `auto`, the runtime selects `default` when both the embedding backend and HNSW index are available
-- in `auto`, the runtime selects `lite` when embeddings are available but the ANN index is unavailable
+- in `auto`, the runtime selects `default` when the embedding backend is available and HNSW support is available
+- in `auto`, the runtime selects `lite` when embeddings are available but HNSW support is unavailable
 - in `auto`, the runtime selects `super_lite` when semantic retrieval is unavailable
 - the setting includes explicit pinning to `super_lite`, `lite`, or `default` for debugging, reproducibility, or operational fallback
 
@@ -383,7 +383,9 @@ HNSW lifecycle:
 - when clean physical removal is not supported, the index marks the entry deleted and removes it on the next rebuild
 - when semantic retrieval backfills missing embeddings, the HNSW index is rebuilt from the refreshed live fragment vectors
 - the same rebuild path is also reused when the configured index file is missing or invalid while semantic-index mode is enabled
-- while a full semantic-index rebuild is in progress, other memory APIs do not mutate or query the semantic index
+- semantic-index mutation paths are serialized so concurrent writes do not update the ANN index in parallel
+- when a semantic search needs the ANN index while rebuild or repair work is active, the runtime waits briefly before returning a retryable status to the caller
+- the caller decides whether to wait longer, retry, or fall back after receiving that status
 
 Current default stack:
 
@@ -398,7 +400,7 @@ Embedding backend boundary:
 
 - the embedding plugin interface stays minimal: text in, vector out
 - the plugin does not own fragment storage, vector persistence, nearest-neighbor indexing, similarity calculation, or final reranking
-- Breathing Memory itself owns re-embedding on provider changes, semantic candidate selection, normalization of `search_priority` inside the semantic result set, and final reranking
+- Breathing Memory itself owns backfilling missing embeddings, semantic candidate selection, normalization of `search_priority` inside the semantic result set, and final reranking
 
 ## Formulas
 
@@ -692,7 +694,7 @@ Input:
   - keeps the user's language and avoids unnecessary translation
   - may be rewritten into a search-oriented query when that improves retrieval
 - `result_count`: optional integer, default `8`; accepted values are `8 * 2^n`
-- `search_effort`: optional integer, default `32`; accepted values are `32 * 2^n`, and in HNSW mode it maps directly to `efSearch`
+- `search_effort`: optional integer, default `32`; accepted values are `32 * 2^n`, and in HNSW mode `efSearch = max(search_effort, result_count)`
 - `actor`: optional `user` or `agent`
 - `kind`: optional string
 - `include_diagnostics`: optional boolean, default `false`; when enabled, each result may include retrieval-path diagnostics
@@ -719,7 +721,18 @@ Output:
     },
     ...
   ],
-  count
+  count,
+  status?: {
+    code,
+    retryable,
+    phase?,
+    started_at?,
+    elapsed_ms?,
+    fragment_count?,
+    current_mode?,
+    suggested_action?,
+    reason?
+  }
 }
 ```
 
@@ -752,11 +765,15 @@ sequenceDiagram
      - `super_lite`: simple substring matching
      - `lite`: embedding retrieval without ANN
      - `default`: embedding retrieval with HNSW
+   - in `auto`, `default` is selected when HNSW support exists even if the current index still needs rebuild or repair
    - treats substring matching as a lexical fallback outside `super_lite`
 
 4. Semantic retrieval
    - uses cosine similarity as the fixed vector-similarity metric and maps it into `[0, 1]` before blending
-   - maps `search_effort` directly to `efSearch` in HNSW mode
+   - maps HNSW `efSearch` to `max(search_effort, result_count)` so the requested result width is never larger than the search breadth
+   - backfills missing embeddings before semantic retrieval continues
+   - when HNSW rebuild or repair is needed, tries to repair it synchronously before querying
+   - waits briefly for conflicting semantic-index maintenance before returning a retryable search status
    - reruns the same query with broader `result_count`, higher `search_effort`, or both when an earlier result set looks insufficient
 
 5. Ranking
@@ -765,6 +782,9 @@ sequenceDiagram
 
 6. Output semantics
    - returns ranked candidates without recording references
+   - may return `status` instead of semantic results when rebuild or repair work is still in progress or when ANN repair fails
+   - when `status.retryable = true`, the caller may wait longer or retry
+   - when `status.retryable = false`, the caller may choose fallback behavior or surface the failure
    - includes `anchor_id` for exact follow-up fetches
    - includes `reply_to` and `parent_id` as inspection metadata for the calling agent
    - includes `actor` and `kind` when available so the calling agent can filter or inspect the result set precisely

@@ -435,12 +435,9 @@ def inspect_semantic_status(memory_config: MemoryConfig) -> dict[str, Any]:
         if not semantic_available:
             effective_mode = "super_lite"
             reason = "auto_without_semantic_backend"
-        elif hnsw_index_ready:
-            effective_mode = "default"
-            reason = "auto_with_hnsw_ready"
         elif hnsw_support_available:
-            effective_mode = "lite"
-            reason = "auto_hnsw_build_required"
+            effective_mode = "default"
+            reason = "auto_with_hnsw_support" if not hnsw_index_ready else "auto_with_hnsw_ready"
         else:
             effective_mode = "lite"
             reason = "auto_without_hnsw_support"

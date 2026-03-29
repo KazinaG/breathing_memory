@@ -561,7 +561,7 @@ class CodexInstallTests(unittest.TestCase):
         self.assertEqual(report["total_capacity"], int(0.5 * (1 << 20)))
         self.assertIn("retrieval", report)
         self.assertEqual(report["retrieval"]["configured_mode"], "auto")
-        self.assertIn(report["retrieval"]["effective_mode"], {"super_lite", "lite"})
+        self.assertIn(report["retrieval"]["effective_mode"], {"super_lite", "lite", "default"})
 
     def test_doctor_ignores_legacy_total_capacity_env_name(self) -> None:
         report = json.loads(
@@ -664,7 +664,7 @@ class CodexInstallTests(unittest.TestCase):
         self.assertTrue(report["warnings"])
         self.assertIn("Memory may not survive container rebuilds", report["warnings"][0])
 
-    def test_doctor_reports_semantic_runtime_when_hnsw_is_not_ready(self) -> None:
+    def test_doctor_reports_default_runtime_when_hnsw_support_is_available_but_not_ready(self) -> None:
         with patch("breathing_memory.cli.semantic_extra_available", return_value=True):
             with patch(
                 "breathing_memory.cli.inspect_hnsw_status",
@@ -688,8 +688,8 @@ class CodexInstallTests(unittest.TestCase):
         self.assertTrue(report["retrieval"]["semantic_extra_available"])
         self.assertTrue(report["retrieval"]["hnsw_support_available"])
         self.assertFalse(report["retrieval"]["hnsw_index_ready"])
-        self.assertEqual(report["retrieval"]["effective_mode"], "lite")
-        self.assertEqual(report["retrieval"]["resolution_reason"], "auto_hnsw_build_required")
+        self.assertEqual(report["retrieval"]["effective_mode"], "default")
+        self.assertEqual(report["retrieval"]["resolution_reason"], "auto_with_hnsw_support")
         self.assertEqual(
             report["retrieval"]["embedding_model"],
             MemoryConfig().embedding_model,

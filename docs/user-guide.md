@@ -52,7 +52,7 @@ breathing-memory doctor
 - which next action is recommended from the current state
 
 In container-like environments, `doctor` also warns when the default app-data root does not appear to be a dedicated mount, because memory may not survive container rebuilds in that setup.
-If `breathing-memory[semantic]` is installed, `doctor` will show that `auto` resolves to `lite`; otherwise it will show that `auto` resolves to `super_lite`.
+If `breathing-memory[semantic]` is installed and HNSW support is available, `doctor` will show that `auto` targets `default` even when the index still needs rebuild or repair; otherwise it will show `lite` or `super_lite` based on what the runtime can actually use.
 
 `breathing-memory install-codex` registers the user-scoped MCP entry named `breathing-memory`, pins that Codex registration to a stable project identity for the current repository, and creates or updates the managed Breathing Memory block in the current repository's `AGENTS.md`.
 After a successful run, it also performs a lightweight registration post-check and prints the active project identity, the resolved DB path, the effective retrieval mode, and the next verification step.
@@ -199,12 +199,12 @@ pip install 'breathing-memory[semantic]'
 
 then runtime `auto` can resolve to:
 
-- `default` when the embedding backend and a healthy HNSW index are available
-- `lite` when embeddings are available but the HNSW index is missing or invalid
+- `default` when the embedding backend and HNSW support are available
+- `lite` when embeddings are available but HNSW support is unavailable
 - `super_lite` when semantic retrieval is unavailable
 
 `breathing-memory doctor` reports the configured retrieval mode, the effective runtime mode, and whether the HNSW index is ready.
-When semantic retrieval encounters live fragments with missing embeddings, Breathing Memory backfills those vectors before continuing.
+When semantic retrieval encounters live fragments with missing embeddings, Breathing Memory backfills those vectors before continuing. If `default` search needs ANN rebuild or repair work, it tries that first, waits briefly for conflicting maintenance, and may return a retryable or non-retryable status so the caller can decide what to do next.
 
 ### `memory_fetch`
 

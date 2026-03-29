@@ -175,7 +175,7 @@ class HnswIndex:
         search_limit = min(int(limit), len(self._active_fragment_ids))
         if search_limit <= 0:
             return []
-        self._index.set_ef(max(int(search_effort), search_limit, DEFAULT_HNSW_EF_SEARCH))
+        self._index.set_ef(max(int(search_effort), search_limit))
         numpy = self._import_numpy()
         labels, _ = self._index.knn_query(
             numpy.asarray([list(map(float, vector))], dtype="float32"),

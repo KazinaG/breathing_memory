@@ -18,6 +18,8 @@ class StubAnnIndex:
         self.embedding_model: str | None = None
         self.vectors_by_fragment_id: dict[int, list[float]] = {}
         self.force_reason: str | None = None
+        self.raise_on_rebuild: Exception | None = None
+        self.rebuild_calls = 0
 
     def support_available(self) -> bool:
         return self.support
@@ -48,6 +50,9 @@ class StubAnnIndex:
         return self.inspect(fragment_ids=vectors_by_fragment_id.keys(), embedding_model=embedding_model)
 
     def rebuild(self, *, vectors_by_fragment_id, embedding_model):
+        self.rebuild_calls += 1
+        if self.raise_on_rebuild is not None:
+            raise self.raise_on_rebuild
         self.embedding_model = embedding_model
         self.vectors_by_fragment_id = {
             int(fragment_id): list(map(float, vector))
@@ -495,6 +500,80 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(result["items"][0]["id"], fragment["id"])
         self.assertEqual(self.engine._resolve_retrieval_mode(), "lite")
         self.assertEqual(result["items"][0]["diagnostics"]["retrieval_mode"], "lite")
+
+    def test_auto_mode_repairs_hnsw_when_supported_but_not_ready(self) -> None:
+        backend = StubEmbeddingBackend({"alpha semantic": [1.0, 0.0], "alpha": [1.0, 0.0]})
+        ann_index = StubAnnIndex()
+        self.engine.close()
+        self.engine = make_engine(
+            self.root / "auto-repair",
+            retrieval_mode="auto",
+            embedding_backend=backend,
+            ann_index=ann_index,
+        )
+        fragment = self.engine.remember(content="alpha semantic", actor="user")
+        ann_index.force_reason = "fragment_set_mismatch"
+
+        result = self.engine.search("alpha", result_count=8, search_effort=32, include_diagnostics=True)
+
+        self.assertEqual(result["items"][0]["id"], fragment["id"])
+        self.assertEqual(result["items"][0]["diagnostics"]["retrieval_mode"], "default")
+        self.assertGreaterEqual(ann_index.rebuild_calls, 2)
+
+    def test_auto_mode_returns_retryable_status_when_ann_rebuild_is_in_progress(self) -> None:
+        backend = StubEmbeddingBackend({"alpha semantic": [1.0, 0.0], "alpha": [1.0, 0.0]})
+        ann_index = StubAnnIndex()
+        self.engine.close()
+        self.engine = make_engine(
+            self.root / "auto-rebuild-pending",
+            retrieval_mode="auto",
+            embedding_backend=backend,
+            ann_index=ann_index,
+            tuning=EngineTuning(ann_wait_timeout_ms=10),
+        )
+        self.engine.remember(content="alpha semantic", actor="user")
+        search_engine = make_engine(
+            self.root / "auto-rebuild-pending",
+            retrieval_mode="auto",
+            embedding_backend=backend,
+            ann_index=ann_index,
+            tuning=EngineTuning(ann_wait_timeout_ms=10),
+        )
+
+        try:
+            with self.engine._ann_maintenance.acquire_exclusive():
+                result = search_engine.search("alpha", result_count=8, search_effort=32)
+        finally:
+            search_engine.close()
+
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["status"]["code"], "rebuild_in_progress")
+        self.assertTrue(result["status"]["retryable"])
+        self.assertEqual(result["status"]["current_mode"], "lite")
+
+    def test_auto_mode_returns_non_retryable_status_when_ann_rebuild_fails(self) -> None:
+        backend = StubEmbeddingBackend({"alpha semantic": [1.0, 0.0], "alpha": [1.0, 0.0]})
+        ann_index = StubAnnIndex()
+        self.engine.close()
+        self.engine = make_engine(
+            self.root / "auto-rebuild-fails",
+            retrieval_mode="auto",
+            embedding_backend=backend,
+            ann_index=ann_index,
+            tuning=EngineTuning(ann_wait_timeout_ms=10),
+        )
+        self.engine.remember(content="alpha semantic", actor="user")
+        ann_index.force_reason = "fragment_set_mismatch"
+        ann_index.raise_on_rebuild = RuntimeError("boom")
+
+        result = self.engine.search("alpha", result_count=8, search_effort=32)
+
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["status"]["code"], "ann_unavailable")
+        self.assertFalse(result["status"]["retryable"])
+        self.assertEqual(result["status"]["reason"], "rebuild_failed")
 
     def test_lite_search_backfills_missing_embeddings(self) -> None:
         backend = StubEmbeddingBackend({"needs embedding": [1.0, 0.0], "needs": [1.0, 0.0]})
