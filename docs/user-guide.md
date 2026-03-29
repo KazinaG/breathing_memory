@@ -200,10 +200,11 @@ pip install 'breathing-memory[semantic]'
 then runtime `auto` can resolve to:
 
 - `default` when the embedding backend and a healthy HNSW index are available
-- `lite` when embeddings are available but the HNSW index is missing, invalid, or rebuilding
+- `lite` when embeddings are available but the HNSW index is missing or invalid
 - `super_lite` when semantic retrieval is unavailable
 
 `breathing-memory doctor` reports the configured retrieval mode, the effective runtime mode, and whether the HNSW index is ready.
+When semantic retrieval encounters live fragments with missing embeddings, Breathing Memory backfills those vectors before continuing.
 
 ### `memory_fetch`
 

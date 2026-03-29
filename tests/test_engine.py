@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from breathing_memory.compression import CompressionResult, StubCompressionBackend
-from breathing_memory.config import MemoryConfig
+from breathing_memory.config import EngineTuning, MemoryConfig
 from breathing_memory.embeddings import StubEmbeddingBackend, cosine_similarity
 from breathing_memory.engine import BreathingMemoryEngine
 from breathing_memory.store import SQLiteStore
@@ -100,6 +100,7 @@ def make_engine(
     embedding_backend: StubEmbeddingBackend | None = None,
     ann_index: StubAnnIndex | None = None,
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    tuning: EngineTuning | None = None,
 ) -> BreathingMemoryEngine:
     config = MemoryConfig(
         db_path=root / "memory.sqlite3",
@@ -109,6 +110,7 @@ def make_engine(
     )
     return BreathingMemoryEngine(
         config=config,
+        tuning=tuning,
         compression_backend=StubCompressionBackend(),
         embedding_backend=embedding_backend,
         ann_index=ann_index,
@@ -319,6 +321,14 @@ class EngineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "search_effort must be 32 \\* 2\\^n"):
             self.engine.search("search", search_effort=48)
 
+    def test_search_accepts_power_of_two_result_count_and_search_effort(self) -> None:
+        fragment = self.engine.remember(content="search me", actor="user")
+
+        result = self.engine.search("search", result_count=16, search_effort=64)
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["items"][0]["id"], fragment["id"])
+
     def test_search_rejects_lite_without_embedding_backend(self) -> None:
         self.engine.close()
         self.engine = make_engine(self.root / "lite", retrieval_mode="lite")
@@ -501,6 +511,29 @@ class EngineTests(unittest.TestCase):
         self.assertIsNotNone(stored.embedding_vector)
         self.assertEqual(result["items"][0]["id"], fragment["id"])
 
+    def test_default_search_backfills_missing_embeddings_and_rebuilds_index(self) -> None:
+        backend = StubEmbeddingBackend({"needs embedding": [1.0, 0.0], "needs": [1.0, 0.0]})
+        ann_index = StubAnnIndex()
+        self.engine.close()
+        self.engine = make_engine(
+            self.root / "default-backfill",
+            retrieval_mode="default",
+            embedding_backend=backend,
+            ann_index=ann_index,
+        )
+        fragment = self.engine.remember(content="needs embedding", actor="user")
+        self.engine.store.update_fragment_embedding(fragment["id"], None)
+        ann_index.vectors_by_fragment_id = {}
+
+        result = self.engine.search("needs", result_count=8, search_effort=32)
+
+        stored = self.engine.store.get_fragment(fragment["id"])
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertIsNotNone(stored.embedding_vector)
+        self.assertEqual(result["items"][0]["id"], fragment["id"])
+        self.assertIn(fragment["id"], ann_index.vectors_by_fragment_id)
+
     def test_default_search_rebuilds_when_index_is_marked_invalid(self) -> None:
         backend = StubEmbeddingBackend(
             {
@@ -673,6 +706,21 @@ class EngineTests(unittest.TestCase):
             [remembered["id"], first_source["id"], second_source["id"]],
         )
 
+    def test_remember_records_unique_source_fragment_ids_only_once(self) -> None:
+        source = self.engine.remember(content="source one", actor="user")
+
+        remembered = self.engine.remember(
+            content="answer with repeated sources",
+            actor="agent",
+            source_fragment_ids=[source["id"], source["id"], int(source["id"])],
+        )
+
+        references = self.engine.store.list_references_from_anchor(remembered["anchor_id"])
+        self.assertEqual(
+            [reference.fragment_id for reference in references],
+            [remembered["id"], source["id"]],
+        )
+
     def test_recent_returns_latest_root_fragments_with_filters(self) -> None:
         root = self.engine.remember(content="root", actor="user")
         older = self.engine.remember(content="older", actor="user", reply_to=root["anchor_id"])
@@ -755,6 +803,57 @@ class EngineTests(unittest.TestCase):
             if fragment.id != compressed_fragment.id
         )
         self.assertEqual(child_fragment.parent_id, compressed_fragment.id)
+
+    def test_compress_once_keeps_parent_when_result_is_not_shorter(self) -> None:
+        self.engine.close()
+        self.engine = make_engine(self.root / "compress-no-shorter", total_capacity=400)
+        parent = self.engine.remember(content="x" * 60, actor="user")
+        self.engine.compression_backend = SelectiveCompressionBackend(
+            {
+                "x" * 60: CompressionResult(content="x" * 60, target_length=12),
+            }
+        )
+
+        compressed = self.engine._compress_once({"compress": 0, "delete": 0}, set())
+
+        self.assertFalse(compressed)
+        fragments = self.engine.store.list_fragments_by_anchor(parent["anchor_id"])
+        self.assertEqual(len(fragments), 1)
+        parent_fragment = self.engine.store.get_fragment(parent["id"])
+        self.assertIsNotNone(parent_fragment)
+        assert parent_fragment is not None
+        self.assertEqual(parent_fragment.layer, "working")
+        self.assertEqual(parent_fragment.compression_fail_count, 1)
+
+    def test_compress_once_keeps_parent_when_move_cannot_complete(self) -> None:
+        self.engine.close()
+        self.engine = make_engine(self.root / "compress-move-fails", total_capacity=80)
+        anchor_id = self.engine.store.create_anchor(None, True)
+        parent_id = self.engine.store.create_fragment(
+            anchor_id=anchor_id,
+            parent_id=None,
+            actor="user",
+            kind=None,
+            content="x" * 50,
+            embedding_vector=None,
+            layer="working",
+        )
+        self.engine.compression_backend = SelectiveCompressionBackend(
+            {
+                "x" * 50: CompressionResult(content="short summary", target_length=10),
+            }
+        )
+
+        compressed = self.engine._compress_once({"compress": 0, "delete": 0}, set())
+
+        self.assertFalse(compressed)
+        fragments = self.engine.store.list_fragments_by_anchor(anchor_id)
+        self.assertEqual(len(fragments), 1)
+        parent_fragment = self.engine.store.get_fragment(parent_id)
+        self.assertIsNotNone(parent_fragment)
+        assert parent_fragment is not None
+        self.assertEqual(parent_fragment.layer, "working")
+        self.assertEqual(parent_fragment.compression_fail_count, 1)
 
     def test_maintenance_flow_converges_under_pressure(self) -> None:
         self.engine.close()
@@ -864,6 +963,45 @@ class EngineTests(unittest.TestCase):
         self.assertGreater(increased, self.engine.tuning.initial_working_ratio)
         self.assertLess(decreased, self.engine.tuning.initial_working_ratio)
 
+    def test_dynamic_layer_ratio_matches_spec_formula(self) -> None:
+        tuning = EngineTuning(
+            initial_working_ratio=0.5,
+            working_ratio_floor=0.3,
+            rate_window_size=4,
+        )
+        self.engine.close()
+        self.engine = make_engine(self.root / "ratio-spec", tuning=tuning)
+        metric_pairs = [(4, 0), (2, 0), (0, 4), (0, 2)]
+
+        expected = tuning.initial_working_ratio
+        lower = tuning.working_ratio_floor
+        upper = 1.0 - lower
+        span = upper - lower
+        running_pairs: list[tuple[int, int]] = []
+        for compress_count, delete_count in metric_pairs:
+            anchor_id = self.engine.store.create_anchor(None, True)
+            self.engine.store.record_sequence_metrics(
+                anchor_id,
+                0,
+                0,
+                compress_count=compress_count,
+                delete_count=delete_count,
+            )
+            running_pairs.append((compress_count, delete_count))
+            window = running_pairs[-tuning.rate_window_size :]
+            compress_rate = sum(pair[0] for pair in window) / tuning.rate_window_size
+            delete_rate = sum(pair[1] for pair in window) / tuning.rate_window_size
+            delta = compress_rate - delete_rate
+            up_room = (upper - expected) / span
+            down_room = (expected - lower) / span
+            if delta >= 0:
+                expected = expected + (up_room * delta / tuning.rate_window_size)
+            else:
+                expected = expected + (down_room * delta / tuning.rate_window_size)
+            expected = min(upper, max(lower, expected))
+
+        self.assertAlmostEqual(self.engine._effective_working_ratio(), expected)
+
     def test_fetch_supports_fragment_and_anchor_lookup(self) -> None:
         self.engine.close()
         self.engine = make_engine(self.root / "fetch", total_capacity=90)
@@ -876,6 +1014,55 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(by_fragment["count"], 1)
         self.assertEqual(by_fragment["items"][0]["id"], parent["id"])
         self.assertEqual(by_anchor["count"], 2)
+
+    def test_fetch_by_anchor_orders_by_search_priority_then_fragment_id(self) -> None:
+        anchor_id = self.engine.store.create_anchor(None, True)
+        highest_id = self.engine.store.create_fragment(
+            anchor_id=anchor_id,
+            parent_id=None,
+            actor="user",
+            kind=None,
+            content="highest",
+            embedding_vector=None,
+            layer="working",
+        )
+        tied_first_id = self.engine.store.create_fragment(
+            anchor_id=anchor_id,
+            parent_id=None,
+            actor="user",
+            kind=None,
+            content="tied first",
+            embedding_vector=None,
+            layer="working",
+        )
+        tied_second_id = self.engine.store.create_fragment(
+            anchor_id=anchor_id,
+            parent_id=None,
+            actor="user",
+            kind=None,
+            content="tied second",
+            embedding_vector=None,
+            layer="working",
+        )
+
+        for fragment_id, verdict in [
+            (highest_id, "positive"),
+            (tied_first_id, "neutral"),
+            (tied_second_id, "neutral"),
+        ]:
+            self.engine.store.create_reference(from_anchor_id=anchor_id, fragment_id=fragment_id)
+            self.engine.store.create_feedback(
+                from_anchor_id=anchor_id,
+                fragment_id=fragment_id,
+                verdict=verdict,
+            )
+
+        result = self.engine.fetch(anchor_id=anchor_id)
+
+        self.assertEqual(
+            [item["id"] for item in result["items"]],
+            [highest_id, tied_first_id, tied_second_id],
+        )
 
     def test_read_active_collaboration_policy_uses_token_budget_with_first_item_exception(self) -> None:
         high_priority = self.engine.remember(
@@ -901,6 +1088,48 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(result["truncated"])
         self.assertGreater(result["used_token_budget"], 1)
         self.assertNotEqual(result["items"][0]["id"], low_priority["id"])
+
+    def test_read_only_apis_do_not_record_references_or_feedback(self) -> None:
+        remembered = self.engine.remember(content="alpha policy context", actor="user")
+        policy = self.engine.remember(
+            content="Always ask a short clarifying question when needed.",
+            actor="agent",
+            kind="collaboration_policy",
+        )
+        reference_snapshot = [
+            (item.from_anchor_id, item.fragment_id)
+            for item in self.engine.store.list_references()
+        ]
+        feedback_snapshot = [
+            (item.from_anchor_id, item.fragment_id, item.verdict)
+            for item in self.engine.store.list_feedback()
+        ]
+
+        search_result = self.engine.search("alpha", result_count=8, search_effort=32)
+        fetch_fragment_result = self.engine.fetch(fragment_id=remembered["id"])
+        fetch_anchor_result = self.engine.fetch(anchor_id=remembered["anchor_id"])
+        recent_result = self.engine.recent(limit=2)
+        policy_result = self.engine.read_active_collaboration_policy(token_budget=512)
+
+        self.assertEqual(search_result["items"][0]["id"], remembered["id"])
+        self.assertEqual(fetch_fragment_result["items"][0]["id"], remembered["id"])
+        self.assertEqual(fetch_anchor_result["items"][0]["id"], remembered["id"])
+        self.assertEqual(recent_result["count"], 2)
+        self.assertEqual(policy_result["items"][0]["id"], policy["id"])
+        self.assertEqual(
+            [
+                (item.from_anchor_id, item.fragment_id)
+                for item in self.engine.store.list_references()
+            ],
+            reference_snapshot,
+        )
+        self.assertEqual(
+            [
+                (item.from_anchor_id, item.fragment_id, item.verdict)
+                for item in self.engine.store.list_feedback()
+            ],
+            feedback_snapshot,
+        )
 
     def test_stats_report_spec_fields_only(self) -> None:
         self.engine.remember(content="stats me", actor="user")

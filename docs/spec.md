@@ -259,7 +259,7 @@ Compression and lineage:
 Embeddings:
 
 - `embedding_vector` stays `NULL` until an embedding backend is configured or backfill has run
-- when the embedding provider changes, all existing live fragments are re-embedded so retrieval stays inside one consistent vector space
+- when semantic retrieval is requested and some live fragments are missing embeddings, those fragments are backfilled before ranking continues
 - a compression child regenerates its own `embedding_vector` from the compressed text instead of copying the parent's vector
 - embeddings are stored at fragment granularity, using `fragments.content` as the source text
 
@@ -381,7 +381,7 @@ HNSW lifecycle:
 - the runtime updates the index incrementally for straightforward inserts and deletions when that is cheaper than a full rebuild
 - when a fragment is physically purged, its index entry is physically removed when the index implementation supports that cleanly
 - when clean physical removal is not supported, the index marks the entry deleted and removes it on the next rebuild
-- when the embedding provider changes, all live fragments are re-embedded and the HNSW index is rebuilt from scratch
+- when semantic retrieval backfills missing embeddings, the HNSW index is rebuilt from the refreshed live fragment vectors
 - the same rebuild path is also reused when the configured index file is missing or invalid while semantic-index mode is enabled
 - while a full semantic-index rebuild is in progress, other memory APIs do not mutate or query the semantic index
 
@@ -611,6 +611,7 @@ Input:
 - `actor`: `user` or `agent`
 - `reply_to`: optional integer
 - `source_fragment_ids`: optional integer array
+- `kind`: optional string
 
 Output:
 
@@ -619,6 +620,7 @@ Output:
   id,
   anchor_id,
   reply_to,
+  kind,
   content,
   content_length,
   layer,
@@ -691,6 +693,8 @@ Input:
   - may be rewritten into a search-oriented query when that improves retrieval
 - `result_count`: optional integer, default `8`; accepted values are `8 * 2^n`
 - `search_effort`: optional integer, default `32`; accepted values are `32 * 2^n`, and in HNSW mode it maps directly to `efSearch`
+- `actor`: optional `user` or `agent`
+- `kind`: optional string
 - `include_diagnostics`: optional boolean, default `false`; when enabled, each result may include retrieval-path diagnostics
 
 Output:
@@ -704,6 +708,7 @@ Output:
       parent_id,
       actor,
       reply_to,
+      kind,
       content,
       content_length,
       layer,
@@ -762,8 +767,63 @@ sequenceDiagram
    - returns ranked candidates without recording references
    - includes `anchor_id` for exact follow-up fetches
    - includes `reply_to` and `parent_id` as inspection metadata for the calling agent
+   - includes `actor` and `kind` when available so the calling agent can filter or inspect the result set precisely
    - when `include_diagnostics = true`, each item may include retrieval-path details such as lexical rank or semantic similarity
    - client-side aliases such as `fast=32`, `balanced=64`, and `thorough=128` stay outside the public API
+
+### `memory_read_active_collaboration_policy`
+
+Purpose:
+
+- load active `collaboration_policy` fragments within a token budget before answering
+
+Input:
+
+- `token_budget`: optional integer, default determined by the caller; minimum `1`
+
+Output:
+
+```text
+{
+  items: [
+    {
+      id,
+      anchor_id,
+      parent_id,
+      actor,
+      reply_to,
+      kind,
+      content,
+      content_length,
+      layer,
+      reference_score,
+      confidence_score,
+      search_priority
+    },
+    ...
+  ],
+  count,
+  token_budget,
+  used_token_budget,
+  truncated
+}
+```
+
+Behavior:
+
+1. Input validation
+   - validates `token_budget`; invalid values are rejected rather than silently rounded
+2. Candidate selection
+   - considers only fragments with `kind = collaboration_policy`
+   - orders candidates by descending `search_priority`
+3. Budgeting
+   - estimates token usage from fragment content length
+   - admits the first item even when that single item exceeds `token_budget`
+   - after the first admitted item, stops before adding another item that would exceed `token_budget`
+4. Output semantics
+   - returns ranked policy fragments without recording references or feedback
+   - returns `truncated = true` when additional policy fragments were omitted by budget
+   - returns both the requested `token_budget` and the actual `used_token_budget`
 
 ### `memory_fetch`
 
@@ -788,6 +848,7 @@ Output:
       parent_id,
       actor,
       reply_to,
+      kind,
       content,
       content_length,
       layer,
@@ -826,6 +887,59 @@ sequenceDiagram
 3. Output semantics
    - returns matching fragments without recording references or feedback
    - serves as a secondary exploration tool after `memory_search` or other fragment inspection
+
+### `memory_recent`
+
+Purpose:
+
+- inspect the most recent remembered root fragments for duplicate checks or thread targeting
+
+Input:
+
+- `limit`: optional integer, default `4`; minimum `1`
+- `actor`: optional `user` or `agent`
+- `reply_to`: optional integer
+
+Output:
+
+```text
+{
+  items: [
+    {
+      id,
+      anchor_id,
+      parent_id,
+      actor,
+      reply_to,
+      kind,
+      content,
+      content_length,
+      layer,
+      reference_score,
+      confidence_score,
+      search_priority
+    },
+    ...
+  ],
+  count
+}
+```
+
+Behavior:
+
+1. Input validation
+   - validates `limit`; invalid values are rejected rather than silently rounded
+   - validates `actor` when provided
+   - validates `reply_to` against a live remembered anchor when provided
+2. Retrieval scope
+   - returns root fragments only
+   - when `actor` is present, filters to that actor
+   - when `reply_to` is present, filters to roots whose anchor replies to that anchor
+3. Ordering
+   - returns the newest matching root fragments first
+   - applies `limit` after filtering
+4. Output semantics
+   - returns recent matching fragments without recording references or feedback
 
 ### `memory_feedback`
 

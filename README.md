@@ -105,7 +105,7 @@ For Codex installs, `install-codex` now pins the MCP registration to a stable pr
 
 If you already have remembered data under an older unpinned Codex registration, migration is manual by design. Move the SQLite database yourself if you want to keep that history; Breathing Memory does not auto-discover or auto-merge old databases.
 
-The current implementation supports lexical retrieval by default and semantic retrieval through the optional `semantic` extra. Runtime `auto` resolves to `default` when both the embedding backend and a healthy HNSW index are available, falls back to `lite` when embeddings are available but the ANN index is missing or recovering, and falls back to `super_lite` when semantic retrieval is unavailable.
+The current implementation supports lexical retrieval by default and semantic retrieval through the optional `semantic` extra. Runtime `auto` resolves to `default` when both the embedding backend and a healthy HNSW index are available, falls back to `lite` when embeddings are available but the ANN index is missing or invalid, and falls back to `super_lite` when semantic retrieval is unavailable. When semantic retrieval encounters live fragments with missing embeddings, Breathing Memory backfills those vectors before continuing.
 
 `breathing-memory doctor` reports both the configured retrieval mode and the effective runtime mode, along with HNSW support and index readiness, so after installing `breathing-memory[semantic]` you can verify when `auto` has moved from `lite` to `default`.
 `breathing-memory install-codex` also prints the effective retrieval mode in its post-install summary, so the semantic state is visible even before the first MCP conversation.

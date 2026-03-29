@@ -40,3 +40,17 @@ class CodexExecCompressionBackendTests(unittest.TestCase):
         self.assertEqual(result.content, "compressed core")
         self.assertEqual(calls[0][0:3], ["/usr/bin/codex", "exec", "--ephemeral"])
 
+    def test_returns_original_text_when_codex_outputs_it_unchanged(self) -> None:
+        original = "original content with extra detail"
+
+        def fake_runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            output_index = command.index("--output-last-message") + 1
+            output_path = Path(command[output_index])
+            output_path.write_text(original, encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        backend = CodexExecCompressionBackend(runner=fake_runner, codex_path="/usr/bin/codex")
+
+        result = backend.compress(original, 0.8)
+
+        self.assertEqual(result.content, original)
