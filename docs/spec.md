@@ -670,6 +670,11 @@ sequenceDiagram
 3. Create the fragment when no duplicate applies
    - assign the fragment's `anchor_id` internally
    - place ordinary user / agent fragments into `working` by default
+   - callers may also persist derived `agent` fragments with `kind = collaboration_policy` when a reusable collaboration rule becomes clear
+   - collaboration-policy saves may be derived either from explicit user feedback or from broader conversational context when the caller judges them likely to be reusable
+   - callers should prefer collaboration-policy saves only when they are likely to affect future behavior, choices, or response style
+   - callers should not save weak inferences, one-off requests, transient emotions, or ambiguous signals as collaboration policy
+   - when uncertain, callers should prefer not to save a collaboration-policy fragment
 4. Record references
    - the MCP-calling agent carries forward the ids of materially used search results and passes them in `source_fragment_ids`
    - record the fragment's creation reference when a new fragment is created
@@ -836,6 +841,7 @@ Behavior:
 2. Candidate selection
    - considers only fragments with `kind = collaboration_policy`
    - orders candidates by descending `search_priority`
+   - callers typically read these fragments as reusable collaboration guidance rather than as ordinary conversation history
 3. Budgeting
    - estimates token usage from fragment content length
    - admits the first item even when that single item exceeds `token_budget`

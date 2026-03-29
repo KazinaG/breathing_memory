@@ -213,6 +213,9 @@ class CodexInstallTests(unittest.TestCase):
         self.assertIn('`memory_search` may use `actor="user"` or `actor="agent"`', updated)
         self.assertIn("memory_read_active_collaboration_policy(token_budget=512)", updated)
         self.assertIn('kind="collaboration_policy"', updated)
+        self.assertIn("broader conversational context", updated)
+        self.assertIn("affect future behavior, choices, or response style", updated)
+        self.assertIn("When uncertain, prefer not to save.", updated)
         self.assertIn("may confirm it with the user before relying on it.", updated)
         self.assertIn("record that with `memory_feedback`.", updated)
         self.assertLess(
@@ -238,6 +241,19 @@ class CodexInstallTests(unittest.TestCase):
         )
         self.assertIn("### Feedback Attribution", block)
         self.assertIn("skip `memory_feedback` rather than guessing.", block)
+        self.assertIn(
+            "This may be derived either from explicit user feedback or from broader conversational context when the caller judges it likely to be reusable.",
+            block,
+        )
+        self.assertIn(
+            "Prefer saving collaboration-policy fragments only when they are likely to affect future behavior, choices, or response style.",
+            block,
+        )
+        self.assertIn(
+            "Do not save weak inferences, one-off requests, transient emotions, or ambiguous signals as collaboration policy.",
+            block,
+        )
+        self.assertIn("When uncertain, prefer not to save.", block)
         self.assertNotIn("Choose a query optimized for semantic retrieval.", block)
 
     def test_install_codex_uses_explicit_project_id_when_provided(self) -> None:

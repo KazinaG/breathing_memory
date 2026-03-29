@@ -35,6 +35,10 @@ For a root user message, omit `reply_to`.
 - For `user` messages, use caller-side `memory_recent` checks before `memory_remember` instead of relying on engine-side duplicate suppression.
 - If no later user turn arrives, the final agent answer may remain unremembered.
 - When a reusable rule about how to collaborate with the user becomes clear, the agent may save one or more derived `agent` fragments with `kind="collaboration_policy"`.
+- This may be derived either from explicit user feedback or from broader conversational context when the caller judges it likely to be reusable.
+- Prefer saving collaboration-policy fragments only when they are likely to affect future behavior, choices, or response style.
+- Do not save weak inferences, one-off requests, transient emotions, or ambiguous signals as collaboration policy.
+- When uncertain, prefer not to save.
 - Keep each `collaboration_policy` fragment focused on a single reusable rule.
 - Use the same `reply_to` as the current turn's user anchor, but treat these fragments as derived policy memory rather than conversational threading.
 

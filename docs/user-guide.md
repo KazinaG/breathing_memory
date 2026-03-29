@@ -162,6 +162,7 @@ Optional inputs:
 
 - `reply_to`
 - `source_fragment_ids`
+- `kind`
 
 Conversation capture timing:
 
@@ -175,6 +176,12 @@ For `user` messages, treat duplicate checks as caller-side logic and use `memory
 
 Use `source_fragment_ids` only when the deferred final answer materially used remembered fragments. `memory_search` itself does not record references.
 Track those materially used fragment ids while drafting the answer so they can be carried into the deferred `memory_remember(actor="agent")` call on the next user turn.
+
+`kind="collaboration_policy"` is reserved for derived agent-side collaboration guidance.
+Callers may save these fragments when a reusable rule about how to collaborate with the user becomes clear, whether that comes from explicit user feedback or from broader conversational context.
+Prefer saving them only when they are likely to affect future behavior, choices, or response style.
+Do not save weak inferences, one-off requests, transient emotions, or ambiguous signals as collaboration policy.
+When uncertain, prefer not to save.
 
 ### `memory_search`
 
