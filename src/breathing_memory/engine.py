@@ -701,38 +701,43 @@ class BreathingMemoryEngine:
             return
 
     def _compress_once(self, counters: dict[str, int], protected_fragment_ids: set[int]) -> bool:
-        candidate = self._select_compression_candidate(protected_fragment_ids)
-        if candidate is None:
-            return False
-        result = self.compression_backend.compress(
-            candidate.content,
-            self.tuning.compression_ratio,
-        )
-        if not result.content.strip() or self._content_size(result.content) >= candidate.content_length:
-            self.store.increment_compression_fail_count(candidate.id)
-            return False
-
-        while self._current_layer_usage("holding") + candidate.content_length > self._holding_budget():
-            if not self._delete_once(counters, protected_fragment_ids=set()):
-                self.store.increment_compression_fail_count(candidate.id)
+        attempted_fragment_ids: set[int] = set()
+        while True:
+            candidate = self._select_compression_candidate(protected_fragment_ids | attempted_fragment_ids)
+            if candidate is None:
                 return False
 
-        child_id = self.store.create_fragment(
-            anchor_id=candidate.anchor_id,
-            parent_id=candidate.id,
-            actor=candidate.actor,
-            kind=candidate.kind,
-            content=result.content,
-            embedding_vector=self._embed_content(result.content),
-            layer="working",
-        )
-        self.store.copy_references(candidate.id, child_id)
-        self.store.copy_feedback(candidate.id, child_id)
-        self.store.create_reference(from_anchor_id=candidate.anchor_id, fragment_id=child_id)
-        self.store.update_fragment_layer(candidate.id, "holding")
-        self._sync_ann_index_for_new_fragment(child_id)
-        counters["compress"] += 1
-        return True
+            result = self.compression_backend.compress(
+                candidate.content,
+                self.tuning.compression_ratio,
+            )
+            if not result.content.strip() or self._content_size(result.content) >= candidate.content_length:
+                self.store.increment_compression_fail_count(candidate.id)
+                attempted_fragment_ids.add(candidate.id)
+                continue
+
+            while self._current_layer_usage("holding") + candidate.content_length > self._holding_budget():
+                if not self._delete_once(counters, protected_fragment_ids=set()):
+                    self.store.increment_compression_fail_count(candidate.id)
+                    attempted_fragment_ids.add(candidate.id)
+                    break
+            else:
+                child_id = self.store.create_fragment(
+                    anchor_id=candidate.anchor_id,
+                    parent_id=candidate.id,
+                    actor=candidate.actor,
+                    kind=candidate.kind,
+                    content=result.content,
+                    embedding_vector=self._embed_content(result.content),
+                    layer="working",
+                )
+                self.store.copy_references(candidate.id, child_id)
+                self.store.copy_feedback(candidate.id, child_id)
+                self.store.create_reference(from_anchor_id=candidate.anchor_id, fragment_id=child_id)
+                self.store.update_fragment_layer(candidate.id, "holding")
+                self._sync_ann_index_for_new_fragment(child_id)
+                counters["compress"] += 1
+                return True
 
     def _delete_once(self, counters: dict[str, int], protected_fragment_ids: set[int]) -> bool:
         candidate = self._select_delete_candidate(protected_fragment_ids)

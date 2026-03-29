@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from breathing_memory.compression import StubCompressionBackend
+from breathing_memory.compression import CompressionResult, StubCompressionBackend
 from breathing_memory.config import MemoryConfig
 from breathing_memory.embeddings import StubEmbeddingBackend, cosine_similarity
 from breathing_memory.engine import BreathingMemoryEngine
@@ -82,6 +82,15 @@ class StubAnnIndex:
             "metadata_path": "/tmp/stub.hnsw.json",
             "fragment_count": len(fragment_ids),
         }
+
+
+class SelectiveCompressionBackend:
+    def __init__(self, results_by_content: dict[str, CompressionResult]):
+        self.results_by_content = results_by_content
+
+    def compress(self, content: str, compression_ratio: float) -> CompressionResult:
+        del compression_ratio
+        return self.results_by_content[content]
 
 
 def make_engine(
@@ -695,6 +704,75 @@ class EngineTests(unittest.TestCase):
         child_references = self.engine.store.list_references_for_fragment(child_fragment.id)
         self.assertEqual([item.verdict for item in child_feedback], ["positive"])
         self.assertEqual(len(child_references), 2)
+
+    def test_compress_once_retries_with_next_candidate_after_failed_attempt(self) -> None:
+        self.engine.close()
+        self.engine = make_engine(self.root / "compress-retry", total_capacity=400)
+
+        first = self.engine.remember(content="x" * 60, actor="user")
+        second = self.engine.remember(content="y" * 40, actor="user")
+        selected_candidate = self.engine._select_compression_candidate(set())
+        self.assertIsNotNone(selected_candidate)
+        assert selected_candidate is not None
+        fallback_candidate = next(
+            fragment
+            for fragment in self.engine.store.list_fragments()
+            if fragment.layer == "working" and fragment.id != selected_candidate.id
+        )
+        self.engine.compression_backend = SelectiveCompressionBackend(
+            {
+                selected_candidate.content: CompressionResult(
+                    content=selected_candidate.content,
+                    target_length=12,
+                ),
+                fallback_candidate.content: CompressionResult(content="short summary", target_length=12),
+            }
+        )
+
+        compressed = self.engine._compress_once({"compress": 0, "delete": 0}, set())
+
+        self.assertTrue(compressed)
+        first_fragment = self.engine.store.get_fragment(first["id"])
+        second_fragment = self.engine.store.get_fragment(second["id"])
+        self.assertIsNotNone(first_fragment)
+        self.assertIsNotNone(second_fragment)
+        assert first_fragment is not None
+        assert second_fragment is not None
+        failed_fragment = self.engine.store.get_fragment(selected_candidate.id)
+        self.assertIsNotNone(failed_fragment)
+        assert failed_fragment is not None
+        self.assertEqual(failed_fragment.compression_fail_count, 1)
+        self.assertEqual(failed_fragment.layer, "working")
+
+        compressed_fragment = self.engine.store.get_fragment(fallback_candidate.id)
+        self.assertIsNotNone(compressed_fragment)
+        assert compressed_fragment is not None
+        self.assertEqual(compressed_fragment.layer, "holding")
+
+        child_fragment = next(
+            fragment
+            for fragment in self.engine.store.list_fragments_by_anchor(fallback_candidate.anchor_id)
+            if fragment.id != compressed_fragment.id
+        )
+        self.assertEqual(child_fragment.parent_id, compressed_fragment.id)
+
+    def test_maintenance_flow_converges_under_pressure(self) -> None:
+        self.engine.close()
+        self.engine = make_engine(self.root / "maintenance-flow", total_capacity=320)
+
+        def make_text(label: str) -> str:
+            return " ".join([label, "memory"] + ["detail" for _ in range(12)] + [f"{label}-summary"])
+
+        for label in ["alpha", "beta", "gamma", "delta"]:
+            self.engine.remember(content=make_text(label), actor="user")
+
+        metrics = self.engine.store.list_sequence_metrics()
+        stats = self.engine.stats()
+
+        self.assertGreater(sum(metric.compress_count for metric in metrics), 0)
+        self.assertGreater(sum(metric.delete_count for metric in metrics), 0)
+        self.assertLessEqual(stats["working_usage"], stats["working_budget"])
+        self.assertLessEqual(stats["holding_usage"], stats["holding_budget"])
 
     def test_compression_preserves_kind_on_child_fragment(self) -> None:
         self.engine.close()
