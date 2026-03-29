@@ -13,6 +13,7 @@ from unittest.mock import patch
 from breathing_memory.cli import (
     CLIError,
     doctor,
+    inspect_memory,
     install_codex_registration,
     main,
     render_agents_block,
@@ -21,6 +22,7 @@ from breathing_memory.cli import (
 )
 from breathing_memory.config import MemoryConfig
 from breathing_memory.engine import BreathingMemoryEngine
+from breathing_memory.runtime import resolve_db_path
 
 
 class FakeRunner:
@@ -414,6 +416,43 @@ class CodexInstallTests(unittest.TestCase):
             self.assertEqual(report["root_count"], 0)
             self.assertEqual(report["missing_reply_count"], 2)
             self.assertEqual(report["recent_fragments"][-1]["reply_target"], "missing")
+
+    def test_inspect_memory_uses_codex_registration_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            workspace = Path(tempdir)
+            binding = resolve_codex_registration_binding(cwd=workspace, env={"PATH": "/usr/bin"})
+            db_path = resolve_db_path(cwd=workspace, env=binding["env"])
+            config = MemoryConfig(db_path=db_path)
+            engine = BreathingMemoryEngine(config=config)
+            try:
+                engine.remember(content="hello from codex registration", actor="user")
+            finally:
+                engine.close()
+
+            runner = FakeRunner(
+                [
+                    subprocess.CompletedProcess(
+                        ["codex", "mcp", "get", "breathing-memory", "--json"],
+                        0,
+                        registration_stdout(binding["env"]),
+                        "",
+                    )
+                ]
+            )
+
+            with patch("breathing_memory.cli.shutil.which", return_value="/usr/bin/codex"):
+                report = json.loads(
+                    inspect_memory(
+                        json_output=True,
+                        runner=runner,
+                        env={"PATH": "/usr/bin"},
+                        cwd=workspace,
+                    )
+                )
+
+        self.assertEqual(report["fragment_count"], 1)
+        self.assertEqual(report["working_count"], 1)
+        self.assertEqual(report["recent_fragments"][-1]["content_length"], len("hello from codex registration".encode("utf-8")))
 
     def test_doctor_reports_missing_codex_and_db_path(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

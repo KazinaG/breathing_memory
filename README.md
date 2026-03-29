@@ -41,14 +41,6 @@ pip install -e .
 breathing-memory install-codex
 ```
 
-Release notes:
-
-- PyPI publish runs from `.github/workflows/publish.yml`
-- `v0.1.0` is published on PyPI
-- `v0.2.0` is published on PyPI with optional `lite` semantic retrieval, search diagnostics, and mode-aware Codex guidance
-- the current development version is `v0.5.0`, which adds collaboration-policy retrieval, actor-filtered memory search, and refined agent guidance
-- pushing a tag such as `v0.5.0` triggers the build and PyPI publish workflow
-
 ## Quickstart
 
 Recommended first run:

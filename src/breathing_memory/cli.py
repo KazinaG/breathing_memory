@@ -184,8 +184,12 @@ def install_codex_registration(
 
 def inspect_memory(
     json_output: bool = False,
+    runner: Any = subprocess.run,
+    env: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> str:
-    engine = BreathingMemoryEngine(config=MemoryConfig())
+    memory_config = resolve_inspect_memory_config(runner=runner, env=env, cwd=cwd)
+    engine = BreathingMemoryEngine(config=memory_config)
     try:
         report = build_memory_report(engine)
     finally:
@@ -710,6 +714,31 @@ def resolve_doctor_environment(
         merged.update({str(key): str(value) for key, value in registration_env.items()})
         return ("codex_registration", merged)
     return ("working_directory", dict(base_env))
+
+
+def resolve_inspect_memory_config(
+    runner: Any = subprocess.run,
+    env: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+) -> MemoryConfig:
+    command_env = dict(os.environ if env is None else env)
+    if command_env.get(DB_PATH_ENV_VAR) or command_env.get(PROJECT_ID_ENV_VAR):
+        return MemoryConfig(db_path=resolve_db_path(cwd=cwd, env=command_env))
+
+    working_directory = Path.cwd() if cwd is None else Path(cwd)
+    expected_binding = resolve_codex_registration_binding(cwd=working_directory, env=command_env)
+    registration_status = inspect_codex_registration_status(
+        codex_path=shutil.which("codex", path=command_env.get("PATH")),
+        runner=runner,
+        env=command_env,
+        expected_env=expected_binding["env"],
+        working_directory=working_directory,
+    )
+    _, resolved_env = resolve_doctor_environment(
+        base_env=command_env,
+        registration_status=registration_status,
+    )
+    return MemoryConfig(db_path=resolve_db_path(cwd=working_directory, env=resolved_env))
 
 
 def format_subprocess_error(prefix: str, completed: Any) -> str:
