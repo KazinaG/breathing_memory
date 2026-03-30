@@ -952,6 +952,112 @@ class EngineTests(unittest.TestCase):
         self.assertLessEqual(stats["working_usage"], stats["working_budget"])
         self.assertLessEqual(stats["holding_usage"], stats["holding_budget"])
 
+    def test_remember_under_pressure_keeps_new_fragment_in_working_layer(self) -> None:
+        self.engine.close()
+        self.engine = make_engine(self.root / "maintenance-protected-insert", total_capacity=320)
+        older_content = " ".join(["older"] + ["detail" for _ in range(18)] + ["summary"])
+        newer_content = " ".join(["newer"] + ["detail" for _ in range(18)] + ["summary"])
+        self.engine.compression_backend = SelectiveCompressionBackend(
+            {
+                older_content: CompressionResult(content="older short summary", target_length=12),
+            }
+        )
+
+        older = self.engine.remember(content=older_content, actor="user")
+        newer = self.engine.remember(content=newer_content, actor="user")
+
+        older_fragment = self.engine.store.get_fragment(older["id"])
+        newer_fragment = self.engine.store.get_fragment(newer["id"])
+        self.assertIsNotNone(older_fragment)
+        self.assertIsNotNone(newer_fragment)
+        assert older_fragment is not None
+        assert newer_fragment is not None
+
+        older_children = [
+            fragment
+            for fragment in self.engine.store.list_fragments_by_anchor(older["anchor_id"])
+            if fragment.parent_id == older_fragment.id
+        ]
+        newer_fragments = self.engine.store.list_fragments_by_anchor(newer["anchor_id"])
+
+        self.assertEqual(older_fragment.layer, "holding")
+        self.assertEqual(len(older_children), 1)
+        self.assertEqual(older_children[0].layer, "working")
+        self.assertEqual(len(newer_fragments), 1)
+        self.assertEqual(newer_fragments[0].id, newer["id"])
+        self.assertEqual(newer_fragments[0].layer, "working")
+        self.assertIsNone(newer_fragments[0].parent_id)
+
+    def test_stabilize_after_insert_deletes_holding_before_compressing_older_working_fragment(self) -> None:
+        self.engine.close()
+        self.engine = make_engine(self.root / "maintenance-delete-then-compress", total_capacity=320)
+        holding_anchor = self.engine.store.create_anchor(None, True)
+        holding_id = self.engine.store.create_fragment(
+            anchor_id=holding_anchor,
+            parent_id=None,
+            actor="user",
+            kind=None,
+            content=" ".join(["holding"] + ["detail" for _ in range(18)] + ["summary"]),
+            embedding_vector=None,
+            layer="holding",
+        )
+        working_anchor = self.engine.store.create_anchor(None, True)
+        working_content = " ".join(["working"] + ["detail" for _ in range(18)] + ["summary"])
+        working_id = self.engine.store.create_fragment(
+            anchor_id=working_anchor,
+            parent_id=None,
+            actor="user",
+            kind=None,
+            content=working_content,
+            embedding_vector=None,
+            layer="working",
+        )
+        protected_anchor = self.engine.store.create_anchor(None, True)
+        protected_content = " ".join(["protected"] + ["detail" for _ in range(10)] + ["summary"])
+        protected_id = self.engine.store.create_fragment(
+            anchor_id=protected_anchor,
+            parent_id=None,
+            actor="user",
+            kind=None,
+            content=protected_content,
+            embedding_vector=None,
+            layer="working",
+        )
+        self.engine.compression_backend = SelectiveCompressionBackend(
+            {
+                working_content: CompressionResult(content="working short summary", target_length=12),
+            }
+        )
+
+        counters = {"compress": 0, "delete": 0}
+
+        self.engine._stabilize_after_insert(
+            current_anchor_id=protected_anchor,
+            counters=counters,
+            protected_fragment_ids={protected_id},
+        )
+
+        self.assertIsNone(self.engine.store.get_fragment(holding_id))
+        protected_fragment = self.engine.store.get_fragment(protected_id)
+        self.assertIsNotNone(protected_fragment)
+        assert protected_fragment is not None
+        self.assertEqual(protected_fragment.layer, "working")
+
+        working_parent = self.engine.store.get_fragment(working_id)
+        self.assertIsNotNone(working_parent)
+        assert working_parent is not None
+        self.assertEqual(working_parent.layer, "holding")
+        working_children = [
+            fragment
+            for fragment in self.engine.store.list_fragments_by_anchor(working_anchor)
+            if fragment.parent_id == working_parent.id
+        ]
+        self.assertEqual(len(working_children), 1)
+        self.assertEqual(working_children[0].layer, "working")
+        self.assertEqual(counters, {"compress": 1, "delete": 1})
+        self.assertLessEqual(self.engine._current_layer_usage("working"), self.engine._working_budget())
+        self.assertLessEqual(self.engine._current_layer_usage("holding"), self.engine._holding_budget())
+
     def test_compression_preserves_kind_on_child_fragment(self) -> None:
         self.engine.close()
         self.engine = make_engine(self.root / "compress-kind", total_capacity=90)
@@ -1099,6 +1205,27 @@ class EngineTests(unittest.TestCase):
             expected = min(upper, max(lower, expected))
 
         self.assertAlmostEqual(self.engine._effective_working_ratio(), expected)
+
+    def test_stats_recent_counts_use_tail_window_only(self) -> None:
+        tuning = EngineTuning(rate_window_size=2)
+        self.engine.close()
+        self.engine = make_engine(self.root / "stats-recent-window", tuning=tuning)
+        metric_rows = [(5, 0), (0, 7), (2, 3)]
+
+        for compress_count, delete_count in metric_rows:
+            anchor_id = self.engine.store.create_anchor(None, True)
+            self.engine.store.record_sequence_metrics(
+                anchor_id,
+                0,
+                0,
+                compress_count=compress_count,
+                delete_count=delete_count,
+            )
+
+        stats = self.engine.stats()
+
+        self.assertEqual(stats["recent_compress_count"], 2)
+        self.assertEqual(stats["recent_delete_count"], 10)
 
     def test_fetch_supports_fragment_and_anchor_lookup(self) -> None:
         self.engine.close()

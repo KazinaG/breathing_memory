@@ -80,6 +80,36 @@ class LiveMaintenanceIntegrationTests(unittest.TestCase):
         self.assertLessEqual(stats["working_usage"], stats["working_budget"])
         self.assertLessEqual(stats["holding_usage"], stats["holding_budget"])
 
+    def test_live_newest_insert_stays_working_when_compression_runs(self) -> None:
+        self.engine = self._make_engine(total_capacity=320)
+
+        older = self.engine.remember(content=self._make_text("alpha", repeats=12), actor="user")
+        newest = self.engine.remember(content=self._make_text("beta", repeats=12), actor="user")
+
+        self._assert_codex_exec_called(min_calls=1)
+
+        older_fragment = self.engine.store.get_fragment(older["id"])
+        newest_fragment = self.engine.store.get_fragment(newest["id"])
+        self.assertIsNotNone(older_fragment)
+        self.assertIsNotNone(newest_fragment)
+        assert older_fragment is not None
+        assert newest_fragment is not None
+
+        older_children = [
+            fragment
+            for fragment in self.engine.store.list_fragments_by_anchor(older["anchor_id"])
+            if fragment.parent_id == older_fragment.id
+        ]
+        newest_fragments = self.engine.store.list_fragments_by_anchor(newest["anchor_id"])
+
+        self.assertEqual(older_fragment.layer, "holding")
+        self.assertEqual(len(older_children), 1)
+        self.assertEqual(older_children[0].layer, "working")
+        self.assertEqual(len(newest_fragments), 1)
+        self.assertEqual(newest_fragments[0].id, newest["id"])
+        self.assertEqual(newest_fragments[0].layer, "working")
+        self.assertIsNone(newest_fragments[0].parent_id)
+
     def test_live_maintenance_flow_converges_under_pressure(self) -> None:
         self.engine = self._make_engine(total_capacity=320)
 

@@ -119,13 +119,7 @@ class BreathingMemoryEngine:
             counters=counters,
             protected_fragment_ids={fragment_id},
         )
-        self.store.record_sequence_metrics(
-            anchor_id=anchor_id,
-            working_usage_bytes=self._current_layer_usage("working"),
-            holding_usage_bytes=self._current_layer_usage("holding"),
-            compress_count=counters["compress"],
-            delete_count=counters["delete"],
-        )
+        self._record_sequence_metrics(anchor_id=anchor_id, counters=counters)
         self._sync_ann_index_for_new_fragment(fragment_id)
         fragment = self.store.get_fragment(fragment_id)
         if fragment is None:
@@ -323,7 +317,8 @@ class BreathingMemoryEngine:
 
     def stats(self) -> dict:
         fragments = self.store.list_fragments()
-        working_ratio = self._effective_working_ratio()
+        budgets = self._budget_snapshot()
+        usage = self._layer_usage_snapshot()
         recent_metrics = self._recent_sequence_metrics()
         parameters = asdict(self.tuning)
         parameters["retrieval_mode"] = self.config.retrieval_mode
@@ -333,11 +328,11 @@ class BreathingMemoryEngine:
             "fragment_count": len(fragments),
             "working_count": len([fragment for fragment in fragments if fragment.layer == "working"]),
             "holding_count": len([fragment for fragment in fragments if fragment.layer == "holding"]),
-            "working_usage": self._current_layer_usage("working"),
-            "holding_usage": self._current_layer_usage("holding"),
-            "working_budget": self._working_budget(),
-            "holding_budget": self._holding_budget(),
-            "working_ratio": working_ratio,
+            "working_usage": usage["working"],
+            "holding_usage": usage["holding"],
+            "working_budget": budgets["working_budget"],
+            "holding_budget": budgets["holding_budget"],
+            "working_ratio": budgets["working_ratio"],
             "recent_compress_count": sum(metric.compress_count for metric in recent_metrics),
             "recent_delete_count": sum(metric.delete_count for metric in recent_metrics),
             "parameters": parameters,
@@ -728,11 +723,11 @@ class BreathingMemoryEngine:
     ) -> None:
         del current_anchor_id
         while True:
-            if self._current_layer_usage("working") > self._working_budget():
+            if self._layer_usage_exceeds_budget("working"):
                 if not self._compress_once(counters, protected_fragment_ids):
                     raise RuntimeError("unable to free working capacity")
                 continue
-            if self._current_layer_usage("holding") > self._holding_budget():
+            if self._layer_usage_exceeds_budget("holding"):
                 if not self._delete_once(counters, protected_fragment_ids):
                     raise RuntimeError("unable to free holding capacity")
                 continue
@@ -754,7 +749,7 @@ class BreathingMemoryEngine:
                 attempted_fragment_ids.add(candidate.id)
                 continue
 
-            while self._current_layer_usage("holding") + candidate.content_length > self._holding_budget():
+            while self._layer_usage_exceeds_budget("holding", extra_bytes=candidate.content_length):
                 if not self._delete_once(counters, protected_fragment_ids=set()):
                     self.store.increment_compression_fail_count(candidate.id)
                     attempted_fragment_ids.add(candidate.id)
@@ -989,16 +984,48 @@ class BreathingMemoryEngine:
         return ratio
 
     def _working_budget(self) -> int:
-        return int(self._total_capacity_bytes() * self._effective_working_ratio())
+        return self._budget_snapshot()["working_budget"]
 
     def _holding_budget(self) -> int:
-        return self._total_capacity_bytes() - self._working_budget()
+        return self._budget_snapshot()["holding_budget"]
 
     def _pressure_working(self) -> float:
         budget = self._working_budget()
         if budget <= 0:
             return 0.0
         return self._current_layer_usage("working") / budget
+
+    def _record_sequence_metrics(self, *, anchor_id: int, counters: dict[str, int]) -> None:
+        usage = self._layer_usage_snapshot()
+        self.store.record_sequence_metrics(
+            anchor_id=anchor_id,
+            working_usage_bytes=usage["working"],
+            holding_usage_bytes=usage["holding"],
+            compress_count=counters["compress"],
+            delete_count=counters["delete"],
+        )
+
+    def _layer_usage_exceeds_budget(self, layer: str, *, extra_bytes: int = 0) -> bool:
+        usage = self._current_layer_usage(layer) + extra_bytes
+        budgets = self._budget_snapshot()
+        budget_key = f"{layer}_budget"
+        return usage > budgets[budget_key]
+
+    def _budget_snapshot(self) -> dict[str, float | int]:
+        working_ratio = self._effective_working_ratio()
+        total_capacity = self._total_capacity_bytes()
+        working_budget = int(total_capacity * working_ratio)
+        return {
+            "working_ratio": working_ratio,
+            "working_budget": working_budget,
+            "holding_budget": total_capacity - working_budget,
+        }
+
+    def _layer_usage_snapshot(self) -> dict[str, int]:
+        return {
+            "working": self._current_layer_usage("working"),
+            "holding": self._current_layer_usage("holding"),
+        }
 
     def _current_layer_usage(self, layer: str) -> int:
         return sum(
