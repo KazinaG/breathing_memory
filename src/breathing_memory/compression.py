@@ -28,6 +28,7 @@ def _build_codex_compression_prompt(content: str, compression_ratio: float) -> s
         "Do not add commentary, bullets, quotes, or labels.\n"
         "Highest priority: minimize character count aggressively.\n"
         "Second priority: preserve the semantic core.\n"
+        "Preserve the original language.\n"
         "Loss of peripheral detail is acceptable.\n"
         f"Target retained length: about {retained_percent}% of the original text.\n\n"
         "Fragment to compress:\n"

@@ -38,7 +38,24 @@ class CodexExecCompressionBackendTests(unittest.TestCase):
             result = backend.compress("original content with extra detail", 0.8)
 
         self.assertEqual(result.content, "compressed core")
-        self.assertEqual(calls[0][0:3], ["/usr/bin/codex", "exec", "--ephemeral"])
+        self.assertEqual(calls[0][0:2], ["/usr/bin/codex", "exec"])
+
+    def test_instructs_codex_to_preserve_original_language_for_japanese_content(self) -> None:
+        original = "このユーザーとは最初に方針を確認してから実装に入る。"
+
+        def fake_runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            output_index = command.index("--output-last-message") + 1
+            output_path = Path(command[output_index])
+            output_path.write_text("方針確認後に実装へ進む。", encoding="utf-8")
+            self.assertIn("Preserve the original language.", kwargs["input"])
+            self.assertIn(original, kwargs["input"])
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        backend = CodexExecCompressionBackend(runner=fake_runner, codex_path="/usr/bin/codex")
+
+        result = backend.compress(original, 0.5)
+
+        self.assertEqual(result.content, "方針確認後に実装へ進む。")
 
     def test_returns_original_text_when_codex_outputs_it_unchanged(self) -> None:
         original = "original content with extra detail"

@@ -133,11 +133,25 @@ class LiveMaintenanceIntegrationTests(unittest.TestCase):
         self.assertLessEqual(stats["working_usage"], stats["working_budget"])
         self.assertLessEqual(stats["holding_usage"], stats["holding_budget"])
 
-    def _make_engine(self, total_capacity: int) -> BreathingMemoryEngine:
-        def recording_runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-            self.command_calls.append(list(command))
-            return subprocess.run(command, **kwargs)
+    def test_live_compression_keeps_original_language(self) -> None:
+        backend = CodexExecCompressionBackend(
+            runner=self._recording_runner,
+            codex_path=CODEX_PATH,
+            workdir=REPO_ROOT,
+        )
+        original = (
+            "このユーザーとは最初に方針を確認してから実装に入る。"
+            "会話の流れを保ったまま、日本語で短く要約してほしい。"
+        )
 
+        result = backend.compress(original, 0.5)
+
+        self._assert_codex_exec_called(min_calls=1)
+        self.assertLess(len(result.content), len(original))
+        self.assertRegex(result.content, r"[ぁ-んァ-ン一-龥]")
+        self.assertTrue("方針" in result.content or "確認" in result.content)
+
+    def _make_engine(self, total_capacity: int) -> BreathingMemoryEngine:
         config = MemoryConfig(
             db_path=self.root / "memory.sqlite3",
             total_capacity_mb=total_capacity / (1024 * 1024),
@@ -146,7 +160,7 @@ class LiveMaintenanceIntegrationTests(unittest.TestCase):
         return BreathingMemoryEngine(
             config=config,
             compression_backend=CodexExecCompressionBackend(
-                runner=recording_runner,
+                runner=self._recording_runner,
                 codex_path=CODEX_PATH,
                 workdir=REPO_ROOT,
             ),
@@ -156,8 +170,13 @@ class LiveMaintenanceIntegrationTests(unittest.TestCase):
     def _assert_codex_exec_called(self, min_calls: int) -> None:
         self.assertGreaterEqual(len(self.command_calls), min_calls)
         for command in self.command_calls:
-            self.assertEqual(command[:3], [CODEX_PATH, "exec", "--ephemeral"])
+            self.assertEqual(command[:2], [CODEX_PATH, "exec"])
+            self.assertIn("--ephemeral", command)
             self.assertIn("--output-last-message", command)
+
+    def _recording_runner(self, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        self.command_calls.append(list(command))
+        return subprocess.run(command, **kwargs)
 
     def _make_text(self, label: str, *, repeats: int) -> str:
         return " ".join([label, "memory"] + ["detail" for _ in range(repeats)] + [f"{label}-summary"])
