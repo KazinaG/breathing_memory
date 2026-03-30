@@ -9,7 +9,7 @@ Inside this repository:
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -e .
+pip install -e '.[semantic]'
 python -m unittest discover -s tests
 python -m breathing_memory
 ```

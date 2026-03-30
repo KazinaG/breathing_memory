@@ -21,7 +21,7 @@ Breathing Memory keeps collaboration context that an agent should remember but a
 The intended long-term user path is:
 
 ```bash
-pip install breathing-memory
+pip install 'breathing-memory[semantic]'
 breathing-memory install-codex
 ```
 
@@ -29,17 +29,9 @@ breathing-memory install-codex
 
 Published package:
 
-- `pip install breathing-memory`
-- semantic retrieval: `pip install 'breathing-memory[semantic]'`
-
-Development installs:
-
-```bash
-pip install git+https://github.com/KazinaG/breathing_memory.git
-# or inside a clone:
-pip install -e .
-breathing-memory install-codex
-```
+- recommended: `pip install 'breathing-memory[semantic]'`
+- minimal lexical-only install: `pip install breathing-memory`
+- contributor setup and unreleased local work: [docs/dev-guide.md](docs/dev-guide.md)
 
 ## Quickstart
 
@@ -48,7 +40,7 @@ Recommended first run:
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -e .
+pip install 'breathing-memory[semantic]'
 breathing-memory doctor
 breathing-memory install-codex
 ```

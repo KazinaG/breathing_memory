@@ -9,27 +9,18 @@ It is not the behavioral source of truth. Normative rules live in [spec.md](spec
 The intended long-term user path is:
 
 ```bash
+pip install 'breathing-memory[semantic]'
+breathing-memory install-codex
+```
+
+If you want the smallest possible install first, lexical-only remains available:
+
+```bash
 pip install breathing-memory
 breathing-memory install-codex
 ```
 
-For development work or unreleased changes, use one of these paths instead:
-
-### Install From Git
-
-```bash
-pip install git+https://github.com/KazinaG/breathing_memory.git
-breathing-memory install-codex
-```
-
-### Install From A Local Clone
-
-```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -e .
-breathing-memory install-codex
-```
+For development work or unreleased changes, use the contributor setup in [dev-guide.md](dev-guide.md).
 
 ## Registration And First Checks
 
