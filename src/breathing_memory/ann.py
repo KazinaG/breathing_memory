@@ -183,88 +183,95 @@ class HnswIndex:
         )
         return [int(label) for label in labels[0] if int(label) >= 0]
 
-    def _inspect(self, *, fragment_id_list: list[int], embedding_model: str) -> dict[str, Any]:
-        if not self.support_available():
-            return {
-                "support_available": False,
-                "ready": False,
-                "status": "unavailable",
-                "reason": "hnsw_support_unavailable",
-                "index_path": str(self.index_path),
-                "metadata_path": str(self.metadata_path),
-                "fragment_count": len(fragment_id_list),
-            }
-        if not fragment_id_list:
-            return {
-                "support_available": True,
-                "ready": False,
-                "status": "build_required",
-                "reason": "empty_corpus",
-                "index_path": str(self.index_path),
-                "metadata_path": str(self.metadata_path),
-                "fragment_count": 0,
-            }
-        if not self.index_path.exists() or not self.metadata_path.exists():
-            return {
-                "support_available": True,
-                "ready": False,
-                "status": "build_required",
-                "reason": "missing_index_files",
-                "index_path": str(self.index_path),
-                "metadata_path": str(self.metadata_path),
-                "fragment_count": len(fragment_id_list),
-            }
-        metadata = self._read_metadata()
-        if metadata is None:
-            return {
-                "support_available": True,
-                "ready": False,
-                "status": "rebuild_required",
-                "reason": "invalid_metadata",
-                "index_path": str(self.index_path),
-                "metadata_path": str(self.metadata_path),
-                "fragment_count": len(fragment_id_list),
-            }
-        if metadata.version != INDEX_FORMAT_VERSION:
-            return {
-                "support_available": True,
-                "ready": False,
-                "status": "rebuild_required",
-                "reason": "index_version_mismatch",
-                "index_path": str(self.index_path),
-                "metadata_path": str(self.metadata_path),
-                "fragment_count": len(fragment_id_list),
-            }
-        if metadata.embedding_model != embedding_model:
-            return {
-                "support_available": True,
-                "ready": False,
-                "status": "rebuild_required",
-                "reason": "embedding_model_mismatch",
-                "index_path": str(self.index_path),
-                "metadata_path": str(self.metadata_path),
-                "fragment_count": len(fragment_id_list),
-            }
-        if metadata.fragment_ids != fragment_id_list:
-            return {
-                "support_available": True,
-                "ready": False,
-                "status": "rebuild_required",
-                "reason": "fragment_set_mismatch",
-                "index_path": str(self.index_path),
-                "metadata_path": str(self.metadata_path),
-                "fragment_count": len(fragment_id_list),
-            }
-        return {
-            "support_available": True,
-            "ready": True,
-            "status": "ready",
-            "reason": "healthy_index",
+    def _status(
+        self,
+        *,
+        support_available: bool,
+        ready: bool,
+        status: str,
+        reason: str,
+        fragment_count: int,
+        dimension: int | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "support_available": support_available,
+            "ready": ready,
+            "status": status,
+            "reason": reason,
             "index_path": str(self.index_path),
             "metadata_path": str(self.metadata_path),
-            "fragment_count": len(fragment_id_list),
-            "dimension": metadata.dimension,
+            "fragment_count": int(fragment_count),
         }
+        if dimension is not None:
+            payload["dimension"] = int(dimension)
+        return payload
+
+    def _inspect(self, *, fragment_id_list: list[int], embedding_model: str) -> dict[str, Any]:
+        if not self.support_available():
+            return self._status(
+                support_available=False,
+                ready=False,
+                status="unavailable",
+                reason="hnsw_support_unavailable",
+                fragment_count=len(fragment_id_list),
+            )
+        if not fragment_id_list:
+            return self._status(
+                support_available=True,
+                ready=False,
+                status="build_required",
+                reason="empty_corpus",
+                fragment_count=0,
+            )
+        if not self.index_path.exists() or not self.metadata_path.exists():
+            return self._status(
+                support_available=True,
+                ready=False,
+                status="build_required",
+                reason="missing_index_files",
+                fragment_count=len(fragment_id_list),
+            )
+        metadata = self._read_metadata()
+        if metadata is None:
+            return self._status(
+                support_available=True,
+                ready=False,
+                status="rebuild_required",
+                reason="invalid_metadata",
+                fragment_count=len(fragment_id_list),
+            )
+        if metadata.version != INDEX_FORMAT_VERSION:
+            return self._status(
+                support_available=True,
+                ready=False,
+                status="rebuild_required",
+                reason="index_version_mismatch",
+                fragment_count=len(fragment_id_list),
+            )
+        if metadata.embedding_model != embedding_model:
+            return self._status(
+                support_available=True,
+                ready=False,
+                status="rebuild_required",
+                reason="embedding_model_mismatch",
+                fragment_count=len(fragment_id_list),
+            )
+        if metadata.fragment_ids != fragment_id_list:
+            return self._status(
+                support_available=True,
+                ready=False,
+                status="rebuild_required",
+                reason="fragment_set_mismatch",
+                fragment_count=len(fragment_id_list),
+            )
+        return self._status(
+            support_available=True,
+            ready=True,
+            status="ready",
+            reason="healthy_index",
+            fragment_count=len(fragment_id_list),
+            dimension=metadata.dimension,
+        )
 
     def _rebuild(
         self,
