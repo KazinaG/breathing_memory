@@ -32,6 +32,16 @@ Forgotten fragments are physically purged instead of being kept as soft-deleted 
 
 Editing an earlier agent message is treated as creating a new branch, not overwriting the old one. Overwrite semantics would rewrite past references, feedback, and compression outcomes. A fork preserves append-order history and keeps prior branches inspectable.
 
+## Compression Architecture
+
+### Why compression quality does not use a semantic parent-child gate
+
+Compression already participates in the forgetting model through the existing acceptance and survival rules: a child must be meaningfully shorter, failed attempts increase the parent's failure penalty, and surviving children still have to prove their value later through retrieval and maintenance pressure. Adding a separate semantic parent-child gate would introduce another threshold with its own failure behavior and would make compression policy less consistent with the rest of the model.
+
+### Why compression does not pin a separate Codex model by default
+
+Compression runs inside the same user-visible collaboration flow as the rest of agent work. Hard-coding a separate model or reasoning profile for compression would make that path drift away from the user's active Codex defaults, increase maintenance risk when client options evolve, and create a second place where style or tone can diverge unexpectedly. If compression-specific overrides are ever needed, they should be explicit opt-in configuration rather than hidden hard-coded defaults.
+
 ## Retrieval And Attribution
 
 ### Why references only count material use
