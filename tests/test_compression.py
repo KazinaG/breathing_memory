@@ -54,3 +54,39 @@ class CodexExecCompressionBackendTests(unittest.TestCase):
         result = backend.compress(original, 0.8)
 
         self.assertEqual(result.content, original)
+
+    def test_falls_back_to_stub_when_codex_exits_nonzero(self) -> None:
+        backend = CodexExecCompressionBackend(
+            runner=lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", "boom"),
+            codex_path="/usr/bin/codex",
+        )
+
+        result = backend.compress("alpha beta gamma delta", 0.8)
+
+        self.assertTrue(result.content)
+        self.assertLessEqual(len(result.content), len("alpha beta gamma delta"))
+
+    def test_falls_back_to_stub_when_codex_does_not_write_output_file(self) -> None:
+        backend = CodexExecCompressionBackend(
+            runner=lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "", ""),
+            codex_path="/usr/bin/codex",
+        )
+
+        result = backend.compress("alpha beta gamma delta", 0.8)
+
+        self.assertTrue(result.content)
+        self.assertLessEqual(len(result.content), len("alpha beta gamma delta"))
+
+    def test_falls_back_to_stub_when_codex_writes_empty_output(self) -> None:
+        def fake_runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            output_index = command.index("--output-last-message") + 1
+            output_path = Path(command[output_index])
+            output_path.write_text("   \n", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        backend = CodexExecCompressionBackend(runner=fake_runner, codex_path="/usr/bin/codex")
+
+        result = backend.compress("alpha beta gamma delta", 0.8)
+
+        self.assertTrue(result.content)
+        self.assertLessEqual(len(result.content), len("alpha beta gamma delta"))

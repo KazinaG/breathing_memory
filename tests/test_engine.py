@@ -967,6 +967,25 @@ class EngineTests(unittest.TestCase):
         child_fragment = next(fragment for fragment in fragments if fragment.id != parent["id"])
         self.assertEqual(child_fragment.kind, "collaboration_policy")
 
+    def test_compression_copies_parent_feedback_to_child_fragment(self) -> None:
+        self.engine.close()
+        self.engine = make_engine(self.root / "compress-feedback", total_capacity=120)
+
+        parent = self.engine.remember(content="x" * 40, actor="user")
+        feedback_source = self.engine.remember(content="feedback source", actor="user")
+        self.engine.feedback(
+            from_anchor_id=feedback_source["anchor_id"],
+            fragment_id=parent["id"],
+            verdict="negative",
+        )
+        self.engine.remember(content="y" * 30, actor="user")
+
+        fragments = self.engine.store.list_fragments_by_anchor(parent["anchor_id"])
+        child_fragment = next(fragment for fragment in fragments if fragment.id != parent["id"])
+
+        child_feedback = self.engine.store.list_feedback_for_fragment(child_fragment.id)
+        self.assertEqual([item.verdict for item in child_feedback], ["positive", "negative"])
+
     def test_purging_child_returns_failure_increment_to_parent(self) -> None:
         self.engine.close()
         self.engine = make_engine(self.root / "child-purge", total_capacity=90)
