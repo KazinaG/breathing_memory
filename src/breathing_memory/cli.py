@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -61,7 +62,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             serve()
             return 0
         if command == "install-codex":
-            message = install_codex_registration(total_capacity_mb=args.total_capacity_mb)
+            message = install_codex_registration(
+                total_capacity_mb=args.total_capacity_mb,
+                codex_config=args.codex_config,
+            )
             print(message)
             return 0
         if command == "inspect-memory":
@@ -93,6 +97,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=_positive_float,
         help="Advanced override for the total remembered-fragment capacity used by the registered MCP server.",
     )
+    install_parser.add_argument(
+        "--codex-config",
+        choices=("home", "repo"),
+        default="home",
+        help="Where to persist the Codex MCP registration. Defaults to the user-level Codex config.",
+    )
     inspect_parser = subparsers.add_parser(
         "inspect-memory",
         help="Inspect remembered fragments with a compact diagnostic report.",
@@ -115,14 +125,19 @@ def install_codex_registration(
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     total_capacity_mb: float | None = None,
+    codex_config: str = "home",
 ) -> str:
     command_env = dict(os.environ if env is None else env)
     if total_capacity_mb is not None:
         command_env[TOTAL_CAPACITY_MB_ENV_VAR] = _format_total_capacity_mb(total_capacity_mb)
     working_directory = Path.cwd() if cwd is None else Path(cwd)
+    codex_env = resolve_codex_cli_env(command_env, working_directory, codex_config=codex_config)
     registration_env = resolve_codex_registration_env(cwd=working_directory, env=command_env)
     effective_env = dict(command_env)
     effective_env.update(registration_env)
+    memory_config = resolve_memory_config(cwd=working_directory, env=effective_env)
+    db_path = memory_config.db_path
+    ensure_install_app_data_writable(effective_env, db_path)
     agents_path = working_directory / AGENTS_FILENAME
     validate_agents_update_target(agents_path)
     current_agents = agents_path.read_text(encoding="utf-8") if agents_path.exists() else None
@@ -134,7 +149,7 @@ def install_codex_registration(
             "Codex CLI was not found on PATH. Install Codex and rerun `breathing-memory install-codex`."
         )
 
-    existing = get_codex_registration(MCP_SERVER_NAME, runner=runner, env=command_env)
+    existing = get_codex_registration(MCP_SERVER_NAME, runner=runner, env=codex_env)
     registration_message: str
     post_check_message = ""
     if existing is not None:
@@ -157,17 +172,26 @@ def install_codex_registration(
             capture_output=True,
             text=True,
             check=False,
-            env=command_env,
+            env=codex_env,
         )
         if completed.returncode != 0:
-            raise CLIError(format_subprocess_error("Failed to register the MCP server with Codex.", completed))
+            guidance = ""
+            if codex_config == "home":
+                guidance = (
+                    "\nIf your environment manages Codex config per repository instead of through the user-level "
+                    "config, rerun `breathing-memory install-codex --codex-config repo`."
+                )
+            raise CLIError(
+                format_subprocess_error("Failed to register the MCP server with Codex.", completed) + guidance
+            )
         registration_message = "Registered Codex MCP server 'breathing-memory'."
         post_check = inspect_codex_registration_status(
             codex_path=shutil.which("codex", path=command_env.get("PATH")),
             runner=runner,
-            env=command_env,
+            env=codex_env,
             expected_env=registration_env,
             working_directory=working_directory,
+            command_env=command_env,
         )
         if post_check.get("status") != "configured":
             raise CLIError(
@@ -179,13 +203,12 @@ def install_codex_registration(
     agents_message = write_agents_file(agents_path, current_agents, planned_agents)
     registration_binding = resolve_codex_registration_binding(cwd=working_directory, env=effective_env)
     identity_source, identity_value = resolve_project_identity(cwd=working_directory, env=effective_env)
-    memory_config = resolve_memory_config(cwd=working_directory, env=effective_env)
-    db_path = memory_config.db_path
     retrieval = inspect_semantic_status(memory_config)
     identity_description = describe_binding_identity(registration_binding, identity_source, identity_value)
     post_check_block = f"{post_check_message}\n" if post_check_message else ""
     next_step_lines = [
         "Next steps:",
+        f"- Codex config target: {codex_config}",
         f"- Project identity: {identity_description}",
         f"- DB path: {db_path}",
         f"- Total capacity: {int(memory_config.total_capacity_mb * (1 << 20))} bytes ({memory_config.total_capacity_mb:g} MB)",
@@ -238,6 +261,7 @@ def doctor(
         env=command_env,
         expected_env=expected_binding["env"],
         working_directory=working_directory,
+        command_env=command_env,
     )
     resolution_context, diagnostic_env = resolve_doctor_environment(
         base_env=command_env,
@@ -251,6 +275,7 @@ def doctor(
     total_capacity_mb = memory_config.total_capacity_mb
     total_capacity = int(total_capacity_mb * (1 << 20))
     app_data_root_is_mount = mount_checker(app_data_root)
+    app_data_root_writable = is_path_writable(app_data_root)
     report = {
         "python_executable": sys.executable,
         "python_version": ".".join(str(part) for part in sys.version_info[:3]),
@@ -262,7 +287,12 @@ def doctor(
         "project_identity": {"source": identity_source, "value": identity_value},
         "app_data_root": str(app_data_root),
         "app_data_root_is_mount": app_data_root_is_mount,
+        "default_app_data_writable": app_data_root_writable,
         "db_path": str(db_path),
+        "db_path_source": determine_db_path_source(
+            base_env=command_env,
+            registration_status=registration_status,
+        ),
         "db_exists": db_path.exists(),
         "retrieval": semantic_status,
         "total_capacity_mb": total_capacity_mb,
@@ -272,6 +302,7 @@ def doctor(
             env=command_env,
             environment=environment,
             app_data_root_is_mount=app_data_root_is_mount,
+            app_data_root_writable=app_data_root_writable,
             retrieval=semantic_status,
             registration_status=registration_status,
         ),
@@ -296,19 +327,30 @@ def inspect_codex_registration_status(
     env: Mapping[str, str] | None = None,
     expected_env: Mapping[str, str] | None = None,
     working_directory: Path | None = None,
+    command_env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if codex_path is None:
-        return {"status": "codex_not_found", "matches_expected": False}
+        return {"status": "codex_not_found", "matches_expected": False, "source": "missing"}
+    config_scan = inspect_codex_config_files(working_directory=working_directory, env=command_env or env)
     try:
         registration = get_codex_registration(MCP_SERVER_NAME, runner=runner, env=env)
     except CLIError as exc:
         return {
             "status": "check_failed",
             "matches_expected": False,
+            "source": config_scan["source"],
+            "config_paths": config_scan["paths"],
+            "config_entries": config_scan["entries"],
             "error": str(exc),
         }
     if registration is None:
-        return {"status": "missing", "matches_expected": False}
+        return {
+            "status": "missing",
+            "matches_expected": False,
+            "source": config_scan["source"],
+            "config_paths": config_scan["paths"],
+            "config_entries": config_scan["entries"],
+        }
     transport = registration.get("transport")
     actual_env = extract_registration_env(registration)
     matches = codex_registration_matches(registration, expected_env or {})
@@ -322,8 +364,12 @@ def inspect_codex_registration_status(
         "status": status,
         "reason": reason,
         "matches_expected": matches,
+        "source": config_scan["source"],
+        "command_source": classify_registration_command(transport.get("command")),
         "transport": registration.get("transport"),
         "env": actual_env,
+        "config_paths": config_scan["paths"],
+        "config_entries": config_scan["entries"],
         "working_directory": str(working_directory) if working_directory is not None else None,
     }
 
@@ -345,10 +391,15 @@ def build_doctor_warnings(
     env: Mapping[str, str],
     environment: Mapping[str, bool],
     app_data_root_is_mount: bool,
+    app_data_root_writable: bool,
     retrieval: Mapping[str, Any],
     registration_status: Mapping[str, Any],
 ) -> list[str]:
     warnings: list[str] = []
+    if not app_data_root_writable and DB_PATH_ENV_VAR not in env:
+        warnings.append(
+            "The default Breathing Memory app-data root is not writable. Set BREATHING_MEMORY_DB_PATH to a writable location."
+        )
     if environment.get("is_container") and DB_PATH_ENV_VAR not in env and not app_data_root_is_mount:
         warnings.append(
             "Container environment detected, but the default Breathing Memory app-data root is not a dedicated mount. "
@@ -564,7 +615,9 @@ def format_doctor_report(report: Mapping[str, Any]) -> str:
         f"Project identity: {identity['source']} = {identity['value']}",
         f"App-data root: {report['app_data_root']}",
         f"App-data root is mount: {'yes' if report['app_data_root_is_mount'] else 'no'}",
+        f"Default app-data writable: {'yes' if report['default_app_data_writable'] else 'no'}",
         f"DB path: {report['db_path']}",
+        f"DB path source: {report['db_path_source']}",
         f"DB exists: {'yes' if report['db_exists'] else 'no'}",
         f"Configured retrieval mode: {retrieval['configured_mode']}",
         f"Effective retrieval mode: {retrieval['effective_mode']} ({retrieval['resolution_reason']})",
@@ -575,7 +628,10 @@ def format_doctor_report(report: Mapping[str, Any]) -> str:
         f"Embedding model: {retrieval['embedding_model'] or 'not available'}",
         f"Total capacity: {report['total_capacity']} bytes",
         f"Codex registration: {registration['status']}",
+        f"Codex registration source: {registration.get('source', 'unknown')}",
     ]
+    if registration.get("command_source"):
+        lines.append(f"Codex registration command: {registration['command_source']}")
     if registration.get("error"):
         lines.append(f"Registration error: {registration['error']}")
     for warning in report["warnings"]:
@@ -616,7 +672,7 @@ def codex_registration_matches_with_env(
 
     return (
         transport.get("type") == "stdio"
-        and transport.get("command") == MCP_SERVER_COMMAND
+        and command_matches_expected(transport.get("command"))
         and transport.get("args") == MCP_SERVER_ARGS
         and transport.get("cwd") is None
         and extract_registration_env(registration) == dict(expected_env)
@@ -660,6 +716,15 @@ def describe_registration(registration: Mapping[str, Any]) -> str:
         extras.append(f"env_vars={transport['env_vars']}")
     extras_text = f" ({', '.join(extras)})" if extras else ""
     return f"{transport.get('type', 'unknown')} {command_line}{extras_text}"
+
+
+def command_matches_expected(command: object) -> bool:
+    if command == MCP_SERVER_COMMAND:
+        return True
+    if not isinstance(command, str) or not os.path.isabs(command):
+        return False
+    command_name = Path(command).name
+    return command_name == MCP_SERVER_COMMAND or command_name == f"{MCP_SERVER_COMMAND}.exe"
 
 
 def build_auto_project_id(identity_source: str, identity_value: str) -> str:
@@ -713,6 +778,19 @@ def resolve_codex_registration_env(
     return registration_env
 
 
+def resolve_codex_cli_env(
+    env: Mapping[str, str],
+    cwd: Path,
+    *,
+    codex_config: str,
+) -> dict[str, str]:
+    resolved = dict(env)
+    if codex_config == "repo":
+        (cwd / ".codex").mkdir(parents=True, exist_ok=True)
+        resolved["HOME"] = str(cwd)
+    return resolved
+
+
 def describe_binding_identity(binding: Mapping[str, Any], identity_source: str, identity_value: str) -> str:
     if binding.get("mode") == "auto_project_id":
         return (
@@ -732,6 +810,51 @@ def extract_registration_env(registration: Mapping[str, Any]) -> dict[str, str]:
     return {str(key): str(value) for key, value in env.items()}
 
 
+def inspect_codex_config_files(
+    *,
+    working_directory: Path | None,
+    env: Mapping[str, str] | None,
+) -> dict[str, Any]:
+    base_directory = Path.cwd() if working_directory is None else Path(working_directory)
+    home_root = Path((env or {}).get("HOME") or Path.home())
+    paths = {
+        "home": str((home_root / ".codex" / "config.toml").resolve()),
+        "repo_local": str((base_directory / ".codex" / "config.toml").resolve()),
+    }
+    entries = {
+        name: codex_config_contains_server(Path(path))
+        for name, path in paths.items()
+    }
+    if entries["home"] and entries["repo_local"]:
+        source = "multiple"
+    elif entries["repo_local"]:
+        source = "repo_local"
+    elif entries["home"]:
+        source = "home"
+    else:
+        source = "missing"
+    return {"source": source, "paths": paths, "entries": entries}
+
+
+def codex_config_contains_server(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    pattern = rf"(?m)^\[mcp_servers\.{re.escape(MCP_SERVER_NAME)}\]\s*$"
+    return re.search(pattern, content) is not None
+
+
+def classify_registration_command(command: object) -> str:
+    if command == MCP_SERVER_COMMAND:
+        return "path"
+    if isinstance(command, str) and os.path.isabs(command):
+        return "absolute_path"
+    return "other"
+
+
 def resolve_doctor_environment(
     base_env: Mapping[str, str],
     registration_status: Mapping[str, Any],
@@ -742,6 +865,41 @@ def resolve_doctor_environment(
         merged.update({str(key): str(value) for key, value in registration_env.items()})
         return ("codex_registration", merged)
     return ("working_directory", dict(base_env))
+
+
+def determine_db_path_source(
+    *,
+    base_env: Mapping[str, str],
+    registration_status: Mapping[str, Any],
+) -> str:
+    if base_env.get(DB_PATH_ENV_VAR) or base_env.get(PROJECT_ID_ENV_VAR):
+        return "env_override"
+    registration_env = registration_status.get("env") or {}
+    if registration_env.get(DB_PATH_ENV_VAR) or registration_env.get(PROJECT_ID_ENV_VAR):
+        return "codex_registration"
+    return "default"
+
+
+def is_path_writable(path: Path) -> bool:
+    probe = Path(path)
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    return probe.exists() and os.access(probe, os.W_OK)
+
+
+def ensure_install_app_data_writable(env: Mapping[str, str], db_path: Path) -> None:
+    if env.get(DB_PATH_ENV_VAR):
+        return
+    app_data_root = get_app_data_root()
+    if is_path_writable(app_data_root):
+        return
+    raise CLIError(
+        "The default Breathing Memory app-data root is not writable.\n"
+        f"App-data root: {app_data_root}\n"
+        f"Planned DB path: {db_path}\n"
+        "Set BREATHING_MEMORY_DB_PATH to a writable SQLite path before rerunning "
+        "`breathing-memory install-codex`."
+    )
 
 
 def resolve_memory_config(
