@@ -13,7 +13,7 @@ pip install 'breathing-memory[semantic]'
 breathing-memory install-codex
 ```
 
-If you want the smallest possible install first, lexical-only remains available:
+If you want the smallest possible install first, `super_lite` remains available:
 
 ```bash
 pip install breathing-memory
@@ -35,18 +35,29 @@ breathing-memory doctor
 - whether `breathing-memory` is on `PATH`
 - whether `codex` is on `PATH`
 - whether the current runtime looks like a container or DevContainer
+- where the active Codex registration was found
+- whether the active registration uses a PATH command or an absolute executable path
 - which project identity is active
+- whether the default app-data root is writable
 - which SQLite path will be used
+- why that SQLite path was selected
 - which retrieval mode is configured and which mode will actually be used at runtime
 - whether the optional semantic extra is available in the current Python environment
 - whether the expected Codex MCP registration already exists
 - which next action is recommended from the current state
 
 In container-like environments, `doctor` also warns when the default app-data root does not appear to be a dedicated mount, because memory may not survive container rebuilds in that setup.
-If `breathing-memory[semantic]` is installed and HNSW support is available, `doctor` will show that `auto` targets `default` even when the index still needs rebuild or repair; otherwise it will show `lite` or `super_lite` based on what the runtime can actually use.
+If `breathing-memory[semantic]` is installed and HNSW support is available, `doctor` will show that `auto` targets `default` even when the index still needs rebuild or repair; otherwise it will show `super_lite` or the internal `lite` fallback based on what the runtime can actually use.
 
 `breathing-memory install-codex` registers the user-scoped MCP entry named `breathing-memory`, pins that Codex registration to a stable project identity for the current repository, and creates or updates the managed Breathing Memory block in the current repository's `AGENTS.md`.
 After a successful run, it also performs a lightweight registration post-check and prints the active project identity, the resolved DB path, the effective retrieval mode, and the next verification step.
+By default it writes to the user-level Codex config. If you want repository-local Codex config instead, choose it explicitly with `--codex-config repo`.
+Before it writes the Codex registration, it also checks whether the default Breathing Memory app-data root is writable. If that preflight fails, set `BREATHING_MEMORY_DB_PATH` to a writable SQLite path and rerun the command.
+
+Codex registration targets:
+
+- `breathing-memory install-codex`: write to the user-level Codex config
+- `breathing-memory install-codex --codex-config repo`: write to `.codex/config.toml` in the current repository
 
 Semantic quick check:
 
@@ -58,7 +69,8 @@ breathing-memory doctor
 After that, `doctor` should report:
 
 - `configured_mode: auto`
-- `effective_mode: lite` or `effective_mode: default`
+- `effective_mode: default` when HNSW support is available
+- `effective_mode: lite` only as an internal fallback when semantic support is partial
 - `semantic_extra_available: true`
 
 Registration notes:
@@ -67,6 +79,7 @@ Registration notes:
 - the command stores a stable `BREATHING_MEMORY_PROJECT_ID` in the Codex MCP registration unless you explicitly override it with `BREATHING_MEMORY_PROJECT_ID` or `BREATHING_MEMORY_DB_PATH`
 - if a different registration already exists under the same name, the command fails and tells you to remove it with `codex mcp remove breathing-memory`
 - if `codex` is not on `PATH`, the command exits clearly instead of writing partial state
+- if writing the default user-level Codex config fails, the command suggests `--codex-config repo` as the next step
 - if `AGENTS.md` cannot be created or safely updated, the command fails instead of leaving repo-side workflow in a partial state
 
 ## Runtime Commands
@@ -198,11 +211,19 @@ pip install 'breathing-memory[semantic]'
 then runtime `auto` can resolve to:
 
 - `default` when the embedding backend and HNSW support are available
-- `lite` when embeddings are available but HNSW support is unavailable
 - `super_lite` when semantic retrieval is unavailable
+
+If embeddings are available but HNSW support is unavailable, runtime currently falls back to `lite` internally. That state is still surfaced by diagnostics, but it is not treated as a primary installation target in this guide.
 
 `breathing-memory doctor` reports the configured retrieval mode, the effective runtime mode, and whether the HNSW index is ready.
 When semantic retrieval encounters live fragments with missing embeddings, Breathing Memory backfills those vectors before continuing. If `default` search needs ANN rebuild or repair work, it tries that first, waits briefly for conflicting maintenance, and may return a retryable or non-retryable status so the caller can decide what to do next.
+
+For `default` retrieval in slim containers, `hnswlib` may need system packages that are not present by default. Typical requirements are:
+
+- Python headers for the active interpreter, such as `python3-dev` or `python3.12-dev`
+- compiler and build tools, such as `build-essential` on Debian/Ubuntu
+
+If `sentence-transformers` installs but `hnswlib` does not, `doctor` will usually show semantic support as available while runtime falls back to the internal `lite` state instead of `default`.
 
 ### `memory_fetch`
 

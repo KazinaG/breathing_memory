@@ -26,11 +26,12 @@ breathing-memory install-codex
 ```
 
 `breathing-memory install-codex` registers the `breathing-memory` MCP server with the currently supported client, pins that registration to a stable project identity for the current repository, and creates or updates the managed Breathing Memory block in the current repository's `AGENTS.md`.
+The default path is the user-level Codex config. If you want repository-local Codex config instead, choose it explicitly with `breathing-memory install-codex --codex-config repo`.
 
 Published package:
 
 - recommended: `pip install 'breathing-memory[semantic]'`
-- minimal lexical-only install: `pip install breathing-memory`
+- minimal `super_lite` install: `pip install breathing-memory`
 - contributor setup and unreleased local work: [docs/dev-guide.md](docs/dev-guide.md)
 
 ## Quickstart
@@ -50,6 +51,11 @@ Useful commands:
 - `breathing-memory doctor`: inspect installation, active project identity, DB path selection, Codex registration state, and effective retrieval mode
 - `breathing-memory serve`: start the stdio MCP server
 - `breathing-memory inspect-memory --json`: inspect current memory state
+
+Codex registration targets:
+
+- `breathing-memory install-codex`: write to the user-level Codex config
+- `breathing-memory install-codex --codex-config repo`: write to `.codex/config.toml` in the current repository
 
 ## How Memory Works
 
@@ -97,9 +103,9 @@ For Codex installs, `install-codex` now pins the MCP registration to a stable pr
 
 If you already have remembered data under an older unpinned Codex registration, migration is manual by design. Move the SQLite database yourself if you want to keep that history; Breathing Memory does not auto-discover or auto-merge old databases.
 
-The current implementation supports lexical retrieval by default and semantic retrieval through the optional `semantic` extra. Runtime `auto` resolves to `default` when the embedding backend and HNSW support are available, resolves to `lite` when embeddings are available but HNSW support is unavailable, and resolves to `super_lite` when semantic retrieval is unavailable. When semantic retrieval encounters live fragments with missing embeddings, Breathing Memory backfills those vectors before continuing. If `default` search finds a missing or invalid ANN index, it attempts repair first, waits briefly for conflicting rebuild work, and returns a structured status when the caller should decide whether to retry or fall back.
+The user-facing setup is intentionally framed as two paths: `super_lite` with no extra semantic dependencies, and `default` through the optional `semantic` extra. Runtime `auto` still has an internal `lite` fallback when embeddings are available but HNSW support is unavailable, but that fallback is treated as an implementation detail rather than as a primary setup target. When semantic retrieval encounters live fragments with missing embeddings, Breathing Memory backfills those vectors before continuing. If `default` search finds a missing or invalid ANN index, it attempts repair first, waits briefly for conflicting rebuild work, and returns a structured status when the caller should decide whether to retry or fall back.
 
-`breathing-memory doctor` reports both the configured retrieval mode and the effective runtime mode, along with HNSW support and index readiness, so after installing `breathing-memory[semantic]` you can verify whether `auto` can target the HNSW-backed path and whether the index is already ready or still needs repair.
+`breathing-memory doctor` reports both the configured retrieval mode and the effective runtime mode, along with whether the default app-data location is writable, where Codex registration was found, whether the registration uses a PATH command or an absolute path, and whether HNSW support and index readiness are available. After installing `breathing-memory[semantic]`, you can verify whether `auto` can target the HNSW-backed path and whether the index is already ready or still needs repair.
 `breathing-memory install-codex` also prints the effective retrieval mode in its post-install summary, so the semantic state is visible even before the first MCP conversation.
 
 The current compression backend invokes a supported coding agent without leaving normal conversation history. In the current supported setup, that path uses Codex through `codex exec --ephemeral`.

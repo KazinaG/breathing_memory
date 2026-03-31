@@ -61,3 +61,11 @@ Retrieval ranking is only a prediction about what should matter. A concrete fina
 ### Why semantic retrieval uses a pluggable embedding backend
 
 Embedding generation is intentionally separated from storage, indexing, and reranking. This keeps the backend boundary narrow and prevents the public retrieval API from depending on storage or indexing details. The current implementation ships with a single default sentence-transformers model; model replacement remains an internal implementation concern rather than a public multi-provider feature.
+
+### Why `install-codex` prefers smart defaults over many explicit modes
+
+`install-codex` is an onboarding command, not a day-to-day power tool. Its default behavior therefore prioritizes low-friction success over exhaustive upfront choice. Breathing Memory keeps the user-level Codex config as the default target, because that remains the simplest mental model for most installs. At the same time, the implementation is allowed to stay flexible internally so it can detect existing registrations, avoid unnecessary rewrites, and support repository-local Codex config when the caller explicitly asks for it. Detailed state explanation belongs in `doctor`, not in a growing list of installer flags.
+
+### Why user-facing setup is framed as `super_lite` vs `default` while `lite` remains internal
+
+For user-facing setup, the main meaningful boundary is whether the semantic stack is installed at all. That is the real onboarding cliff. A no-extra install maps naturally to `super_lite`, and a semantic install maps naturally to `default` when the full stack is available. Runtime still needs an intermediate fallback when embeddings exist but HNSW support is unavailable, so `lite` remains a useful internal state and a useful diagnostic label. It is not, however, the primary user-facing setup target, because exposing it as a first-class onboarding path would add conceptual weight without reducing the real installation barrier.
