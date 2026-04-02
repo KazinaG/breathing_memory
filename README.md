@@ -50,12 +50,34 @@ Useful commands:
 
 - `breathing-memory doctor`: inspect installation, active project identity, DB path selection, Codex registration state, and effective retrieval mode
 - `breathing-memory serve`: start the stdio MCP server
+- `breathing-memory warmup`: eagerly load the semantic embedding backend for the current environment
 - `breathing-memory inspect-memory --json`: inspect current memory state
 
 Codex registration targets:
 
 - `breathing-memory install-codex`: write to the user-level Codex config
 - `breathing-memory install-codex --codex-config repo`: write to `.codex/config.toml` in the current repository
+
+Environment-specific setup:
+
+- normal local environment
+  - `pip install 'breathing-memory[semantic]'`
+  - `breathing-memory doctor`
+  - `breathing-memory install-codex`
+- repository-local Codex config, including DevContainer workflows that track `.codex/config.toml`
+  - `pip install 'breathing-memory[semantic]'`
+  - `breathing-memory doctor`
+  - `breathing-memory install-codex --codex-config repo`
+- slim containers where native build dependencies may be missing
+  - install Python headers and compiler toolchain first
+  - then run `pip install 'breathing-memory[semantic]'`
+  - confirm the effective mode with `breathing-memory doctor`
+- minimal lexical-only install
+  - `pip install breathing-memory`
+  - `breathing-memory install-codex`
+- environments where you want to preload the semantic model before a session
+  - `pip install 'breathing-memory[semantic]'`
+  - `breathing-memory warmup`
 
 ## How Memory Works
 
@@ -88,6 +110,7 @@ Current MCP tools:
 
 - `memory_remember`
 - `memory_search`
+- `memory_read_active_collaboration_policy`
 - `memory_fetch`
 - `memory_recent`
 - `memory_feedback`
@@ -104,6 +127,8 @@ For Codex installs, `install-codex` now pins the MCP registration to a stable pr
 If you already have remembered data under an older unpinned Codex registration, migration is manual by design. Move the SQLite database yourself if you want to keep that history; Breathing Memory does not auto-discover or auto-merge old databases.
 
 The user-facing setup is intentionally framed as two paths: `super_lite` with no extra semantic dependencies, and `default` through the optional `semantic` extra. Runtime `auto` still has an internal `lite` fallback when embeddings are available but HNSW support is unavailable, but that fallback is treated as an implementation detail rather than as a primary setup target. When semantic retrieval encounters live fragments with missing embeddings, Breathing Memory backfills those vectors before continuing. If `default` search finds a missing or invalid ANN index, it attempts repair first, waits briefly for conflicting rebuild work, and returns a structured status when the caller should decide whether to retry or fall back.
+
+`breathing-memory serve` keeps the MCP handshake path light. If the semantic backend is available, the server starts a best-effort background warmup only after the MCP session is live. The first semantic call may still need to wait if that warmup has not finished yet, and semantic calls can still fail if model import or download fails. `breathing-memory warmup` exists when you want to preload that backend explicitly before a session.
 
 `breathing-memory doctor` reports both the configured retrieval mode and the effective runtime mode, along with whether the default app-data location is writable, where Codex registration was found, whether the registration uses a PATH command or an absolute path, and whether HNSW support and index readiness are available. After installing `breathing-memory[semantic]`, you can verify whether `auto` can target the HNSW-backed path and whether the index is already ready or still needs repair.
 `breathing-memory install-codex` also prints the effective retrieval mode in its post-install summary, so the semantic state is visible even before the first MCP conversation.

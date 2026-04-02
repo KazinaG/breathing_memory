@@ -29,7 +29,7 @@ def _package_version() -> str:
     try:
         return version("breathing-memory")
     except PackageNotFoundError:
-        return "0.5.5"
+        return "0.5.6"
 
 
 def _tool_definitions() -> list[types.Tool]:
@@ -224,6 +224,7 @@ def create_mcp_server(
     @server.list_tools()
     async def handle_list_tools(request: types.ListToolsRequest) -> types.ListToolsResult:
         del request
+        server.request_context.lifespan_context.start_background_embedding_warmup()
         return types.ListToolsResult(tools=_tool_definitions())
 
     @server.call_tool()
@@ -232,6 +233,7 @@ def create_mcp_server(
         if handler is None:
             raise ValueError(f"Unknown tool: {name}")
         active_engine = server.request_context.lifespan_context
+        active_engine.start_background_embedding_warmup()
         return handler(active_engine, arguments)
 
     return server

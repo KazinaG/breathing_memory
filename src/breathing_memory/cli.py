@@ -61,6 +61,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if command == "serve":
             serve()
             return 0
+        if command == "warmup":
+            message = warmup()
+            print(message)
+            return 0
         if command == "install-codex":
             message = install_codex_registration(
                 total_capacity_mb=args.total_capacity_mb,
@@ -91,6 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("serve", help="Run the MCP server over stdio.")
+    subparsers.add_parser("warmup", help="Eagerly load the semantic embedding backend for the current environment.")
     install_parser = subparsers.add_parser("install-codex", help="Register the MCP server with Codex.")
     install_parser.add_argument(
         "--total-capacity-mb",
@@ -118,6 +123,30 @@ def build_parser() -> argparse.ArgumentParser:
 
 def serve() -> None:
     asyncio.run(serve_stdio_server(config=MemoryConfig()))
+
+
+def warmup(
+    env: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+) -> str:
+    command_env = dict(os.environ if env is None else env)
+    working_directory = Path.cwd() if cwd is None else Path(cwd)
+    memory_config = resolve_memory_config(cwd=working_directory, env=command_env)
+    engine = BreathingMemoryEngine(config=memory_config)
+    try:
+        if not engine.warmup_embeddings():
+            return (
+                "Semantic embedding backend is not available in this Python environment. "
+                "Install `breathing-memory[semantic]` first."
+            )
+    except Exception as exc:
+        raise CLIError(f"Failed to warm up the semantic embedding backend: {exc}") from exc
+    finally:
+        engine.close()
+    return (
+        "Semantic embedding backend is warmed up for this environment. "
+        "You can rerun `breathing-memory warmup` at any time."
+    )
 
 
 def install_codex_registration(

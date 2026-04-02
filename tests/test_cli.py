@@ -19,6 +19,7 @@ from breathing_memory.cli import (
     render_agents_block,
     resolve_codex_registration_binding,
     resolve_agents_guidance_mode,
+    warmup,
 )
 from breathing_memory.config import MemoryConfig, TOTAL_CAPACITY_MB_ENV_VAR
 from breathing_memory.engine import BreathingMemoryEngine
@@ -612,6 +613,24 @@ class CodexInstallTests(unittest.TestCase):
 
         self.assertEqual(status, 1)
         self.assertIn("broken", stderr.getvalue())
+
+    def test_warmup_reports_missing_semantic_dependency(self) -> None:
+        with patch("breathing_memory.cli.BreathingMemoryEngine.warmup_embeddings", return_value=False):
+            message = warmup(env={"PATH": ""}, cwd=Path("/workspace"))
+
+        self.assertIn("Semantic embedding backend is not available", message)
+
+    def test_main_runs_warmup_command(self) -> None:
+        stdout = io.StringIO()
+        with patch(
+            "breathing_memory.cli.BreathingMemoryEngine.warmup_embeddings",
+            return_value=True,
+        ):
+            with contextlib.redirect_stdout(stdout):
+                status = main(["warmup"])
+
+        self.assertEqual(status, 0)
+        self.assertIn("warmed up", stdout.getvalue())
 
     def test_inspect_memory_reports_fragment_counts_and_missing_replies(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

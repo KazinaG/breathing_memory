@@ -22,6 +22,46 @@ breathing-memory install-codex
 
 For development work or unreleased changes, use the contributor setup in [dev-guide.md](dev-guide.md).
 
+Recommended paths by environment:
+
+- normal local environment
+
+  ```bash
+  pip install 'breathing-memory[semantic]'
+  breathing-memory doctor
+  breathing-memory install-codex
+  ```
+
+- repository-local Codex config, including DevContainer setups that keep `.codex/config.toml` in the repo
+
+  ```bash
+  pip install 'breathing-memory[semantic]'
+  breathing-memory doctor
+  breathing-memory install-codex --codex-config repo
+  ```
+
+- slim containers where native dependencies may be missing
+
+  ```bash
+  # install python headers and compiler tooling first
+  pip install 'breathing-memory[semantic]'
+  breathing-memory doctor
+  ```
+
+- minimal lexical-only setup
+
+  ```bash
+  pip install breathing-memory
+  breathing-memory install-codex
+  ```
+
+- preload semantic weights before opening a session
+
+  ```bash
+  pip install 'breathing-memory[semantic]'
+  breathing-memory warmup
+  ```
+
 ## Registration And First Checks
 
 The fastest first check is:
@@ -91,12 +131,14 @@ Server entrypoints:
 - `breathing-memory serve`
 
 All three start the stdio MCP server.
+The `serve` command keeps the MCP handshake path light, then starts a best-effort background semantic warmup only after the MCP session is live. That warmup is an optimization, not a new contract: the first semantic call may still wait, and semantic calls can still fail if import, download, or model initialization fails.
 
 Inspection commands:
 
 - `breathing-memory doctor`: installation and environment checks
 - `breathing-memory inspect-memory`: compact inspection output
 - `breathing-memory inspect-memory --json`: machine-readable memory state
+- `breathing-memory warmup`: eagerly load the semantic embedding backend for the current environment
 
 ## Storage Behavior
 
@@ -146,10 +188,11 @@ For normal use, prefer the CLI option `breathing-memory install-codex --total-ca
 
 ## MCP Tool Surface
 
-Breathing Memory currently exposes six MCP tools:
+Breathing Memory currently exposes seven MCP tools:
 
 - `memory_remember`
 - `memory_search`
+- `memory_read_active_collaboration_policy`
 - `memory_fetch`
 - `memory_recent`
 - `memory_feedback`
@@ -216,6 +259,7 @@ then runtime `auto` can resolve to:
 If embeddings are available but HNSW support is unavailable, runtime currently falls back to `lite` internally. That state is still surfaced by diagnostics, but it is not treated as a primary installation target in this guide.
 
 `breathing-memory doctor` reports the configured retrieval mode, the effective runtime mode, and whether the HNSW index is ready.
+`breathing-memory warmup` is re-runnable. Use it when you want to preload the semantic backend explicitly or retry warmup after a transient failure without starting a full MCP session.
 When semantic retrieval encounters live fragments with missing embeddings, Breathing Memory backfills those vectors before continuing. If `default` search needs ANN rebuild or repair work, it tries that first, waits briefly for conflicting maintenance, and may return a retryable or non-retryable status so the caller can decide what to do next.
 
 For `default` retrieval in slim containers, `hnswlib` may need system packages that are not present by default. Typical requirements are:

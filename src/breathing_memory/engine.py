@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import logging
 import math
 from pathlib import Path
 import re
@@ -30,6 +31,7 @@ LEXICAL_SEPARATOR_PATTERN = re.compile(r"[`'\"/\\._\-,:;!?()[\]{}<>|*+=~@#$%^&]+
 WHITESPACE_PATTERN = re.compile(r"\s+")
 SEARCH_TERM_PATTERN = re.compile(r"[0-9a-z]+|[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+")
 COLLABORATION_POLICY_KIND = "collaboration_policy"
+LOGGER = logging.getLogger(__name__)
 
 
 class SearchStatusError(RuntimeError):
@@ -341,6 +343,17 @@ class BreathingMemoryEngine:
     def export_fragment_graph(self) -> list[dict]:
         return [self._serialize_search_item(fragment) for fragment in self.store.list_fragments()]
 
+    def warmup_embeddings(self) -> bool:
+        if self.embedding_backend is None:
+            return False
+        self.embedding_backend.warmup()
+        return True
+
+    def start_background_embedding_warmup(self) -> bool:
+        if self.embedding_backend is None:
+            return False
+        return self.embedding_backend.start_background_warmup(on_error=self._handle_background_warmup_error)
+
     def _validate_retrieval_mode(self, retrieval_mode: str) -> None:
         if retrieval_mode not in {"auto", "super_lite", "lite", "default"}:
             raise ValueError("retrieval_mode must be 'auto', 'super_lite', 'lite', or 'default'")
@@ -590,6 +603,12 @@ class BreathingMemoryEngine:
             return None
         vector = self.embedding_backend.embed_texts([content])[0]
         return pack_embedding(vector)
+
+    def _handle_background_warmup_error(self, exc: Exception) -> None:
+        LOGGER.warning(
+            "Background embedding warmup failed; semantic calls will retry on demand.",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
 
     def _ensure_fragment_embeddings(
         self,

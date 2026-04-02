@@ -72,6 +72,27 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_list_tools_starts_background_embedding_warmup(self) -> None:
+        calls: list[str] = []
+        original = self.engine.start_background_embedding_warmup
+
+        def _wrapped() -> bool:
+            calls.append("started")
+            return original()
+
+        self.engine.start_background_embedding_warmup = _wrapped  # type: ignore[method-assign]
+        try:
+            async def callback(session: ClientSession, init: types.InitializeResult):
+                del init
+                return await session.list_tools()
+
+            tools = await self._with_session(callback)
+        finally:
+            self.engine.start_background_embedding_warmup = original  # type: ignore[method-assign]
+
+        self.assertEqual(len(tools.tools), 7)
+        self.assertEqual(calls, ["started", "started"])
+
     async def test_memory_tool_flow(self) -> None:
         async def callback(session: ClientSession, init: types.InitializeResult):
             del init
