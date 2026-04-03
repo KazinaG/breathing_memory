@@ -546,10 +546,10 @@ class BreathingMemoryEngine:
     def _normalize_result_count(self, result_count: Optional[int]) -> int:
         value = self.tuning.default_result_count if result_count is None else int(result_count)
         if value < self.tuning.default_result_count or value % self.tuning.default_result_count != 0:
-            raise ValueError("result_count must be 8 * 2^n")
+            raise ValueError("result_count must be 4 * 2^n")
         quotient = value // self.tuning.default_result_count
         if quotient & (quotient - 1):
-            raise ValueError("result_count must be 8 * 2^n")
+            raise ValueError("result_count must be 4 * 2^n")
         return value
 
     def _normalize_search_effort(self, search_effort: Optional[int]) -> int:

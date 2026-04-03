@@ -272,7 +272,7 @@ class EngineTests(unittest.TestCase):
         fragment = self.engine.remember(content="search me", actor="user")
         before = len(self.engine.store.list_references())
 
-        result = self.engine.search("search", result_count=8, search_effort=32)
+        result = self.engine.search("search", result_count=4, search_effort=32)
 
         self.assertEqual(result["items"][0]["id"], fragment["id"])
         self.assertEqual(len(self.engine.store.list_references()), before)
@@ -288,7 +288,7 @@ class EngineTests(unittest.TestCase):
 
         result = self.engine.search(
             "concise answers",
-            result_count=8,
+            result_count=4,
             search_effort=32,
             kind="collaboration_policy",
         )
@@ -303,7 +303,7 @@ class EngineTests(unittest.TestCase):
 
         result = self.engine.search(
             "summary",
-            result_count=8,
+            result_count=4,
             search_effort=32,
             actor="agent",
         )
@@ -321,7 +321,7 @@ class EngineTests(unittest.TestCase):
     def test_search_validates_result_count_and_search_effort(self) -> None:
         self.engine.remember(content="search me", actor="user")
 
-        with self.assertRaisesRegex(ValueError, "result_count must be 8 \\* 2\\^n"):
+        with self.assertRaisesRegex(ValueError, "result_count must be 4 \\* 2\\^n"):
             self.engine.search("search", result_count=12)
         with self.assertRaisesRegex(ValueError, "search_effort must be 32 \\* 2\\^n"):
             self.engine.search("search", search_effort=48)
@@ -373,7 +373,7 @@ class EngineTests(unittest.TestCase):
         )
         fragment = self.engine.remember(content="default winner", actor="user")
 
-        result = self.engine.search("default query", result_count=8, search_effort=32)
+        result = self.engine.search("default query", result_count=4, search_effort=32)
 
         self.assertEqual(result["items"][0]["id"], fragment["id"])
 
@@ -392,7 +392,7 @@ class EngineTests(unittest.TestCase):
         self.engine.feedback(from_anchor_id=semantic["anchor_id"], fragment_id=semantic["id"], verdict="positive")
         self.engine.feedback(from_anchor_id=semantic["anchor_id"], fragment_id=semantic["id"], verdict="positive")
 
-        result = self.engine.search("semantic query", result_count=8, search_effort=32)
+        result = self.engine.search("semantic query", result_count=4, search_effort=32)
 
         self.assertEqual(result["items"][0]["id"], semantic["id"])
         self.assertEqual(result["items"][1]["id"], high["id"])
@@ -410,7 +410,7 @@ class EngineTests(unittest.TestCase):
 
         result = self.engine.search(
             "semantic query",
-            result_count=8,
+            result_count=4,
             search_effort=32,
             include_diagnostics=True,
         )
@@ -440,7 +440,7 @@ class EngineTests(unittest.TestCase):
 
         result = self.engine.search(
             "default query",
-            result_count=8,
+            result_count=4,
             search_effort=32,
             include_diagnostics=True,
         )
@@ -457,7 +457,7 @@ class EngineTests(unittest.TestCase):
 
         result = self.engine.search(
             "search memory",
-            result_count=8,
+            result_count=4,
             search_effort=32,
             include_diagnostics=True,
         )
@@ -479,7 +479,7 @@ class EngineTests(unittest.TestCase):
         )
         fragment = self.engine.remember(content="alpha semantic", actor="user")
 
-        result = self.engine.search("alpha", result_count=8, search_effort=32)
+        result = self.engine.search("alpha", result_count=4, search_effort=32)
 
         self.assertEqual(result["items"][0]["id"], fragment["id"])
         self.assertEqual(self.engine._resolve_retrieval_mode(), "default")
@@ -495,7 +495,7 @@ class EngineTests(unittest.TestCase):
         )
         fragment = self.engine.remember(content="alpha semantic", actor="user")
 
-        result = self.engine.search("alpha", result_count=8, search_effort=32, include_diagnostics=True)
+        result = self.engine.search("alpha", result_count=4, search_effort=32, include_diagnostics=True)
 
         self.assertEqual(result["items"][0]["id"], fragment["id"])
         self.assertEqual(self.engine._resolve_retrieval_mode(), "lite")
@@ -514,7 +514,7 @@ class EngineTests(unittest.TestCase):
         fragment = self.engine.remember(content="alpha semantic", actor="user")
         ann_index.force_reason = "fragment_set_mismatch"
 
-        result = self.engine.search("alpha", result_count=8, search_effort=32, include_diagnostics=True)
+        result = self.engine.search("alpha", result_count=4, search_effort=32, include_diagnostics=True)
 
         self.assertEqual(result["items"][0]["id"], fragment["id"])
         self.assertEqual(result["items"][0]["diagnostics"]["retrieval_mode"], "default")
@@ -542,7 +542,7 @@ class EngineTests(unittest.TestCase):
 
         try:
             with self.engine._ann_maintenance.acquire_exclusive():
-                result = search_engine.search("alpha", result_count=8, search_effort=32)
+                result = search_engine.search("alpha", result_count=4, search_effort=32)
         finally:
             search_engine.close()
 
@@ -567,7 +567,7 @@ class EngineTests(unittest.TestCase):
         ann_index.force_reason = "fragment_set_mismatch"
         ann_index.raise_on_rebuild = RuntimeError("boom")
 
-        result = self.engine.search("alpha", result_count=8, search_effort=32)
+        result = self.engine.search("alpha", result_count=4, search_effort=32)
 
         self.assertEqual(result["items"], [])
         self.assertEqual(result["count"], 0)
@@ -582,7 +582,7 @@ class EngineTests(unittest.TestCase):
         fragment = self.engine.remember(content="needs embedding", actor="user")
         self.engine.store.update_fragment_embedding(fragment["id"], None)
 
-        result = self.engine.search("needs", result_count=8, search_effort=32)
+        result = self.engine.search("needs", result_count=4, search_effort=32)
 
         stored = self.engine.store.get_fragment(fragment["id"])
         self.assertIsNotNone(stored)
@@ -604,7 +604,7 @@ class EngineTests(unittest.TestCase):
         self.engine.store.update_fragment_embedding(fragment["id"], None)
         ann_index.vectors_by_fragment_id = {}
 
-        result = self.engine.search("needs", result_count=8, search_effort=32)
+        result = self.engine.search("needs", result_count=4, search_effort=32)
 
         stored = self.engine.store.get_fragment(fragment["id"])
         self.assertIsNotNone(stored)
@@ -631,7 +631,7 @@ class EngineTests(unittest.TestCase):
         fragment = self.engine.remember(content="semantic winner", actor="user")
         ann_index.force_reason = "invalid_metadata"
 
-        result = self.engine.search("semantic query", result_count=8, search_effort=32)
+        result = self.engine.search("semantic query", result_count=4, search_effort=32)
 
         self.assertEqual(result["items"][0]["id"], fragment["id"])
         self.assertIsNone(ann_index.force_reason)
@@ -663,7 +663,7 @@ class EngineTests(unittest.TestCase):
             embedding_model="model-b",
         )
 
-        result = self.engine.search("semantic query", result_count=8, search_effort=32)
+        result = self.engine.search("semantic query", result_count=4, search_effort=32)
 
         self.assertEqual(result["items"][0]["id"], fragment["id"])
         self.assertEqual(ann_index.embedding_model, "model-b")
@@ -671,7 +671,7 @@ class EngineTests(unittest.TestCase):
     def test_search_normalizes_symbols_and_whitespace(self) -> None:
         fragment = self.engine.remember(content="`public/` 側には\nまだ残っています。", actor="user")
 
-        result = self.engine.search("public 側にはまだ残っています", result_count=8, search_effort=32)
+        result = self.engine.search("public 側にはまだ残っています", result_count=4, search_effort=32)
 
         self.assertEqual(result["count"], 1)
         self.assertEqual(result["items"][0]["id"], fragment["id"])
@@ -679,7 +679,7 @@ class EngineTests(unittest.TestCase):
     def test_search_matches_query_terms_without_exact_contiguous_substring(self) -> None:
         fragment = self.engine.remember(content="memory\nsearch ready", actor="user")
 
-        result = self.engine.search("search memory", result_count=8, search_effort=32)
+        result = self.engine.search("search memory", result_count=4, search_effort=32)
 
         self.assertEqual(result["count"], 1)
         self.assertEqual(result["items"][0]["id"], fragment["id"])
@@ -1330,7 +1330,7 @@ class EngineTests(unittest.TestCase):
             for item in self.engine.store.list_feedback()
         ]
 
-        search_result = self.engine.search("alpha", result_count=8, search_effort=32)
+        search_result = self.engine.search("alpha", result_count=4, search_effort=32)
         fetch_fragment_result = self.engine.fetch(fragment_id=remembered["id"])
         fetch_anchor_result = self.engine.fetch(anchor_id=remembered["anchor_id"])
         recent_result = self.engine.recent(limit=2)

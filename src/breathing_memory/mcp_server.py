@@ -56,7 +56,7 @@ def _tool_definitions() -> list[types.Tool]:
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
-                    "result_count": {"type": "integer", "minimum": 8},
+                    "result_count": {"type": "integer", "minimum": 4},
                     "search_effort": {"type": "integer", "minimum": 32},
                     "actor": {"type": "string", "enum": ["user", "agent"]},
                     "kind": {"type": ["string", "null"]},

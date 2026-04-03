@@ -40,6 +40,6 @@ class EngineTuning:
     rate_window_size: int = 64
     compression_ratio: float = 0.8
     epsilon: float = 1e-9
-    default_result_count: int = 8
+    default_result_count: int = 4
     default_search_effort: int = 32
     ann_wait_timeout_ms: int = 500

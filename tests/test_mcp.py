@@ -108,7 +108,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
 
             search = await session.call_tool(
                 "memory_search",
-                {"query": "hello", "result_count": 8, "search_effort": 32},
+                {"query": "hello", "result_count": 4, "search_effort": 32},
             )
 
             fetch = await session.call_tool(
@@ -152,7 +152,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
                 "memory_search",
                 {
                     "query": "hello",
-                    "result_count": 8,
+                    "result_count": 4,
                     "search_effort": 32,
                     "include_diagnostics": True,
                 },
@@ -185,7 +185,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
                 "memory_search",
                 {
                     "query": "shared summary",
-                    "result_count": 8,
+                    "result_count": 4,
                     "search_effort": 32,
                     "actor": "agent",
                 },

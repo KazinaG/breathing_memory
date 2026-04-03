@@ -48,10 +48,10 @@ For a root user message, omit `reply_to`.
 AGENTS_SEARCH_QUERY_COMMON = """- `memory_search.query` must be chosen by the MCP-calling agent for the current user request.
 - Keep the query in the user's language and avoid unnecessary translation.
 - Use the default `search_effort` of `32` unless there is a concrete reason to choose a different valid value up front.
-- Start with a `result_count` of `8` unless there is a concrete reason to choose a different valid value up front.
+- Start with a `result_count` of `4` unless there is a concrete reason to choose a different valid value up front.
 - If retrieval is cleaner when limited to one side of the conversation, `memory_search` may use `actor="user"` or `actor="agent"`.
 - If the first search result looks insufficient, rerun `memory_search` with a broader `result_count`, a higher `search_effort`, or both.
-- Treat `result_count` as powers of two from the base `8`, and `search_effort` as powers of two from the base `32`.
+- Treat `result_count` as powers of two from the base `4`, and `search_effort` as powers of two from the base `32`.
 """
 
 AGENTS_SEARCH_QUERY_SUPER_LITE = """- Choose a query optimized for lexical retrieval.

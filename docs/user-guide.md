@@ -239,6 +239,7 @@ Inputs:
   - keep the query in the user's language and avoid unnecessary translation
   - rewrite it into a search-oriented query when that improves retrieval
 - optional `result_count`
+  - defaults to `4`; accepted values are `4 * 2^n`
 - optional `search_effort`
 - optional `include_diagnostics`
   - when `true`, each result includes mode-specific retrieval diagnostics such as lexical rank details or semantic similarity

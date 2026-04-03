@@ -698,7 +698,7 @@ Input:
   - is chosen by the MCP-calling agent for the current user request
   - keeps the user's language and avoids unnecessary translation
   - may be rewritten into a search-oriented query when that improves retrieval
-- `result_count`: optional integer, default `8`; accepted values are `8 * 2^n`
+- `result_count`: optional integer, default `4`; accepted values are `4 * 2^n`
 - `search_effort`: optional integer, default `32`; accepted values are `32 * 2^n`, and in HNSW mode `efSearch = max(search_effort, result_count)`
 - `actor`: optional `user` or `agent`
 - `kind`: optional string
