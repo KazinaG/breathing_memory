@@ -62,6 +62,18 @@ Retrieval ranking is only a prediction about what should matter. A concrete fina
 
 Embedding generation is intentionally separated from storage, indexing, and reranking. This keeps the backend boundary narrow and prevents the public retrieval API from depending on storage or indexing details. The current implementation ships with a single default sentence-transformers model; model replacement remains an internal implementation concern rather than a public multi-provider feature.
 
+### Why the internal architecture separates core service logic from transport adapters
+
+Breathing Memory now treats the MCP server as one adapter, not as the product boundary itself. The memory model, retrieval flow, and maintenance logic need to remain reusable from in-process consumers without forcing those consumers through MCP-shaped call paths. Keeping MCP as a thin adapter preserves the stable external tool surface for Codex while making the core service directly reusable from other runtimes.
+
+### Why payload serialization lives in adapters instead of core types
+
+Typed core results are meant to represent the service contract, not one transport's wire format. Keeping JSON-like payload assembly in adapters avoids leaking MCP compatibility concerns back into the core layer and lets in-process consumers depend on typed objects directly.
+
+### Why in-process composition has a formal factory
+
+Non-MCP consumers still need a stable way to get the default project-scoped config and instantiate the typed core engine. Putting that bootstrap path behind a small public factory keeps CLI wiring and in-process wiring aligned without pushing transport-specific concerns back into the core service contract.
+
 ### Why `install-codex` prefers smart defaults over many explicit modes
 
 `install-codex` is an onboarding command, not a day-to-day power tool. Its default behavior therefore prioritizes low-friction success over exhaustive upfront choice. Breathing Memory keeps the user-level Codex config as the default target, because that remains the simplest mental model for most installs. At the same time, the implementation is allowed to stay flexible internally so it can detect existing registrations, avoid unnecessary rewrites, and support repository-local Codex config when the caller explicitly asks for it. Detailed state explanation belongs in `doctor`, not in a growing list of installer flags.

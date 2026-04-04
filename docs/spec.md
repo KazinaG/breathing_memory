@@ -2,26 +2,11 @@
 
 ## Summary
 
-Breathing Memory manages the fluid parts of agent collaboration that are awkward to keep as repository source of truth: conversational context, user preferences, working tendencies, and other high-churn memory that an agent should remember but a repository should not need to constantly document. It treats that memory as competitive fragments instead of a fixed ontology. Fragments survive through reference, compression, correction, and deletion pressure. The model is inspired by human forgetting and by treating remembered information as subject to selection pressure. The current implementation provides a local Python implementation with SQLite persistence and an official Python SDK-based stdio MCP server.
+Breathing Memory stores high-churn collaboration context as competitive fragments with explicit reference, feedback, compression, and deletion pressure. The runtime provides SQLite persistence, a stdio MCP surface, and a typed in-process core API.
 
-By default, the packaged runtime stores SQLite state under user app-data rather than inside the consuming repository, while remembered content remains isolated by project identity so different repositories and directories do not get mixed together.
+Default runtime storage lives under user app-data and remains isolated by project identity. Conversation capture is explicit: MCP callers use the MCP tools, and non-MCP callers use the typed core service.
 
-Conversation capture relies on explicit MCP calls from the MCP-calling agent.
-
-## Design Principles
-
-Breathing Memory is built around the following design ideas:
-
-- remembered content is not treated as fixed knowledge; it is treated as fragments that compete to survive
-- forgetting is part of the model rather than a failure of the model
-- retrieval-time ranking is a prediction about what may matter next
-- concrete reference use and user feedback are observations about what actually mattered
-- observations update remembered relations, evaluations, and layer placement
-- compression, deletion, and bounded storage act as selection pressure on remembered fragments
-
-## Agreed Design Direction
-
-The implemented direction is:
+## Model
 
 Memory units:
 
@@ -78,7 +63,9 @@ Retrieval and compression foundation:
 
 Runtime surface:
 
-- five MCP tools: `memory_remember`, `memory_search`, `memory_fetch`, `memory_feedback`, `memory_stats`
+- seven MCP tools: `memory_remember`, `memory_search`, `memory_read_active_collaboration_policy`, `memory_fetch`, `memory_recent`, `memory_feedback`, `memory_stats`
+- a typed in-process core service with request/response objects for non-MCP consumers
+- a small public factory for default project-scoped config resolution and core-engine construction
 - project-scoped default storage resolution for reuse across multiple repositories
 - a helper CLI for registering the stdio server with the currently supported client
 
@@ -191,37 +178,6 @@ Reply semantics:
 - if a replied-to anchor is purged, `replies_to_anchor_id` is cleared to `null` while `is_root = false` preserves the fact that the anchor was not born as a root
 - forked replies, including edits of earlier remembered messages, are modeled as sibling branches that legitimately share the same `replies_to_anchor_id`
 - editing an earlier remembered message leaves the old branch intact and continues from a new branch instead of overwriting the old one
-
-Canonical reply examples:
-
-- the first user anchor in a conversation has `is_root = true` and `replies_to_anchor_id = null`
-- a normal agent anchor is remembered on the next user turn and points `replies_to_anchor_id` at the user anchor it answered
-- the next user anchor has `is_root = false` and points `replies_to_anchor_id` at that remembered agent anchor
-- a forked user anchor has `is_root = false` and points `replies_to_anchor_id` at an earlier reachable anchor
-- an edited earlier reply is stored as another forked anchor that keeps the edited reply's `replies_to_anchor_id`
-
-The same reply structure can be visualized as:
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Agent
-    participant Memory
-
-    User->>Agent: send first user message
-    activate Agent
-    Agent->>Memory: create anchor 1 (user, is_root=true, reply_to=null)
-    Agent-->>User: send agent reply (not yet remembered)
-    deactivate Agent
-    loop subsequent turns
-        User->>Agent: send next user message
-        activate Agent
-        Agent->>Memory: create previous agent anchor (reply_to=previous user anchor)
-        Agent->>Memory: create next user anchor (reply_to=that remembered agent anchor)
-        Agent-->>User: send next agent reply (not yet remembered)
-        deactivate Agent
-    end
-```
 
 ### `fragments`
 

@@ -4,63 +4,18 @@ This guide covers user-facing operation details that are too specific for the to
 
 It is not the behavioral source of truth. Normative rules live in [spec.md](spec.md).
 
-## Installation Paths
+## Setup Positioning
 
-The intended long-term user path is:
+Use [README.md](../README.md) for the shortest installation and quickstart path.
 
-```bash
-pip install 'breathing-memory[semantic]'
-breathing-memory install-codex
-```
+This guide starts after that point and focuses on:
 
-If you want the smallest possible install first, `super_lite` remains available:
+- how to verify the active runtime state
+- how Codex registration behaves
+- how the in-process core API differs from the MCP path
+- what operational knobs and runtime surfaces exist
 
-```bash
-pip install breathing-memory
-breathing-memory install-codex
-```
-
-For development work or unreleased changes, use the contributor setup in [dev-guide.md](dev-guide.md).
-
-Recommended paths by environment:
-
-- normal local environment
-
-  ```bash
-  pip install 'breathing-memory[semantic]'
-  breathing-memory doctor
-  breathing-memory install-codex
-  ```
-
-- repository-local Codex config, including DevContainer setups that keep `.codex/config.toml` in the repo
-
-  ```bash
-  pip install 'breathing-memory[semantic]'
-  breathing-memory doctor
-  breathing-memory install-codex --codex-config repo
-  ```
-
-- slim containers where native dependencies may be missing
-
-  ```bash
-  # install python headers and compiler tooling first
-  pip install 'breathing-memory[semantic]'
-  breathing-memory doctor
-  ```
-
-- minimal lexical-only setup
-
-  ```bash
-  pip install breathing-memory
-  breathing-memory install-codex
-  ```
-
-- preload semantic weights before opening a session
-
-  ```bash
-  pip install 'breathing-memory[semantic]'
-  breathing-memory warmup
-  ```
+For development work or unreleased changes, use [dev-guide.md](dev-guide.md).
 
 ## Registration And First Checks
 
@@ -99,14 +54,7 @@ Codex registration targets:
 - `breathing-memory install-codex`: write to the user-level Codex config
 - `breathing-memory install-codex --codex-config repo`: write to `.codex/config.toml` in the current repository
 
-Semantic quick check:
-
-```bash
-pip install 'breathing-memory[semantic]'
-breathing-memory doctor
-```
-
-After that, `doctor` should report:
+After installing `breathing-memory[semantic]`, `doctor` should report:
 
 - `configured_mode: auto`
 - `effective_mode: default` when HNSW support is available
@@ -139,6 +87,35 @@ Inspection commands:
 - `breathing-memory inspect-memory`: compact inspection output
 - `breathing-memory inspect-memory --json`: machine-readable memory state
 - `breathing-memory warmup`: eagerly load the semantic embedding backend for the current environment
+
+## In-Process Core API
+
+Breathing Memory keeps the MCP surface stable, but it is not MCP-only. Non-MCP consumers can use the typed core service directly through `breathing_memory.core`.
+
+Use the public factory when you want the same default project-scoped config resolution that the CLI uses:
+
+```python
+from breathing_memory.core import (
+    ReadActiveCollaborationPolicyRequest,
+    RememberRequest,
+    SearchRequest,
+    create_engine,
+)
+
+engine = create_engine()
+engine.remember(RememberRequest(content="hello", actor="user"))
+engine.search(SearchRequest(query="hello"))
+engine.read_active_collaboration_policy(
+    ReadActiveCollaborationPolicyRequest(token_budget=512)
+)
+engine.close()
+```
+
+If you need to inspect or override the resolved runtime config before constructing the engine, use `breathing_memory.core.resolve_memory_config(...)` and pass that `MemoryConfig` into `create_engine(...)`.
+
+Use `breathing_memory.engine.BreathingMemoryEngine` only when dict-shaped compatibility is still required. That module is a legacy shim over the typed core service.
+
+Use this path when your runtime is already in Python and does not need MCP tool transport. Use the MCP path when your runtime expects stdio tools and schema-validated inputs.
 
 ## Storage Behavior
 

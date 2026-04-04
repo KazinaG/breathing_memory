@@ -1,6 +1,6 @@
 # Breathing Memory
 
-Breathing Memory is a local memory support system for coding agents. It runs as a stdio MCP server through the official Python MCP SDK, stores memory in SQLite, and isolates memory by project so one installation can be reused across repositories without mixing contexts.
+Breathing Memory is a local memory support system for coding agents. It exposes a stable stdio MCP server for agent clients, also exposes a typed in-process core API for non-MCP consumers, stores memory in SQLite, and isolates memory by project so one installation can be reused across repositories without mixing contexts.
 
 ## Overview
 
@@ -15,6 +15,7 @@ Breathing Memory keeps collaboration context that an agent should remember but a
 ## Supported Clients
 
 - Codex
+- Python in-process consumers through `breathing_memory.core`
 
 ## Installation
 
@@ -79,32 +80,48 @@ Environment-specific setup:
   - `pip install 'breathing-memory[semantic]'`
   - `breathing-memory warmup`
 
+## Usage Surfaces
+
+Breathing Memory keeps the MCP surface stable while also supporting direct in-process use.
+
+Use MCP when your agent runtime expects tools over stdio:
+
+```bash
+breathing-memory serve
+```
+
+Use the typed core API when your runtime wants to call memory directly in Python:
+
+```python
+from breathing_memory.core import (
+    ReadActiveCollaborationPolicyRequest,
+    RememberRequest,
+    SearchRequest,
+    create_engine,
+)
+
+engine = create_engine()
+engine.remember(RememberRequest(content="hello", actor="user"))
+engine.search(SearchRequest(query="hello"))
+engine.read_active_collaboration_policy(
+    ReadActiveCollaborationPolicyRequest(token_budget=512)
+)
+engine.close()
+```
+
+If you need to inspect or override the resolved project-scoped config first, call `breathing_memory.core.resolve_memory_config(...)` and pass the result to `create_engine(...)`.
+
 ## How Memory Works
 
-Breathing Memory does not auto-capture the full client conversation by itself. The supported operating path is explicit MCP use by the calling agent.
+Breathing Memory does not auto-capture the full client conversation by itself. The consuming runtime must call it explicitly, either through the MCP tools or through the typed core API.
 
-The basic flow is:
+At a high level:
 
-1. Check `memory_recent` before persisting immediately repeated agent / user turns
-2. If there is an unremembered final agent answer from the previous turn, save it first with `memory_remember(actor="agent")`
-3. Save the current user message with `memory_remember(actor="user")`
-4. Search before an answer with `memory_search`
-5. Record feedback with `memory_feedback` when the user clearly confirms or corrects remembered information
+1. save turns explicitly
+2. search before answering
+3. record references and feedback only when they materially apply
 
-Key points:
-
-- one user utterance becomes one fragment
-- one final user-facing agent answer is normally remembered on the next user turn
-- commentary is not remembered
-- use `memory_recent` as a caller-side first check before `memory_remember` when you suspect an immediately repeated save
-- track which retrieved fragments materially informed the final answer and pass them in `source_fragment_ids`
-- if the final answer materially used remembered fragments, pass those ids in `source_fragment_ids`
-- use `memory_feedback` only when the user's evaluation can be attributed safely
-- edits are modeled as forks rather than overwrites
-- duplicate deferred agent capture for the same reply target and content is suppressed
-- user duplicate checks are caller-side and should use `memory_recent` rather than engine-side suppression
-- archived runtime files such as `archived_sessions/*.jsonl` are not the primary capture path
-- if no later user turn arrives, the final agent answer may remain unremembered
+The detailed MCP caller flow, duplicate-handling rules, and attribution rules live in [docs/user-guide.md](docs/user-guide.md) and [docs/spec.md](docs/spec.md).
 
 Current MCP tools:
 
@@ -120,20 +137,21 @@ Current MCP tools:
 
 ## Runtime Notes
 
-Breathing Memory stores data under the user app-data directory resolved by `platformdirs`, then separates memory by project identity. The exact SQLite path can be inspected with `breathing-memory doctor`.
+Breathing Memory stores data under the user app-data directory resolved by `platformdirs`, then separates memory by project identity. The exact active path, retrieval mode, and Codex registration state can be inspected with `breathing-memory doctor`.
 
-For Codex installs, `install-codex` now pins the MCP registration to a stable project identity derived from the repository at install time, so the live MCP server does not drift with VSCode or Codex internal working directories. `doctor` prefers that registration-derived identity when it is available, so its reported DB path matches the live MCP target rather than the shell's current directory.
+For Codex installs, `install-codex` pins the MCP registration to a stable project identity derived from the repository at install time, so the live MCP server does not drift with editor-side working directories. Older unpinned databases are not auto-migrated.
 
-If you already have remembered data under an older unpinned Codex registration, migration is manual by design. Move the SQLite database yourself if you want to keep that history; Breathing Memory does not auto-discover or auto-merge old databases.
+Runtime setup is intentionally framed as `super_lite` and `default`. Semantic warmup, HNSW readiness, and other operational details are documented in [docs/user-guide.md](docs/user-guide.md). Normative runtime behavior lives in [docs/spec.md](docs/spec.md).
 
-The user-facing setup is intentionally framed as two paths: `super_lite` with no extra semantic dependencies, and `default` through the optional `semantic` extra. Runtime `auto` still has an internal `lite` fallback when embeddings are available but HNSW support is unavailable, but that fallback is treated as an implementation detail rather than as a primary setup target. When semantic retrieval encounters live fragments with missing embeddings, Breathing Memory backfills those vectors before continuing. If `default` search finds a missing or invalid ANN index, it attempts repair first, waits briefly for conflicting rebuild work, and returns a structured status when the caller should decide whether to retry or fall back.
+## Documentation Map
 
-`breathing-memory serve` keeps the MCP handshake path light. If the semantic backend is available, the server starts a best-effort background warmup only after the MCP session is live. The first semantic call may still need to wait if that warmup has not finished yet, and semantic calls can still fail if model import or download fails. `breathing-memory warmup` exists when you want to preload that backend explicitly before a session.
-
-`breathing-memory doctor` reports both the configured retrieval mode and the effective runtime mode, along with whether the default app-data location is writable, where Codex registration was found, whether the registration uses a PATH command or an absolute path, and whether HNSW support and index readiness are available. After installing `breathing-memory[semantic]`, you can verify whether `auto` can target the HNSW-backed path and whether the index is already ready or still needs repair.
-`breathing-memory install-codex` also prints the effective retrieval mode in its post-install summary, so the semantic state is visible even before the first MCP conversation.
-
-The current compression backend invokes a supported coding agent without leaving normal conversation history. In the current supported setup, that path uses Codex through `codex exec --ephemeral`.
+| Document | Primary role | Read this when |
+| --- | --- | --- |
+| `README.md` | product entrypoint and public surface overview | you need the fastest overview of installation paths, usage surfaces, and the current supported clients |
+| `docs/user-guide.md` | user-facing operation details | you are installing, registering, inspecting, or operating Breathing Memory as a runtime |
+| `docs/dev-guide.md` | contributor-oriented setup and codebase orientation | you are editing this repository or integrating against the typed core API during development |
+| `docs/spec.md` | normative behavior and implementation contract | you need the source of truth for runtime semantics, storage rules, and public behavior |
+| `docs/design-rationale.md` | adopted design decisions and tradeoffs | you need to understand why the current boundaries and policies exist |
 
 ## Further Reading
 
