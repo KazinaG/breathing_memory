@@ -364,9 +364,29 @@ class CodexInstallTests(unittest.TestCase):
         self.assertIn("When uncertain, prefer not to save.", updated)
         self.assertIn("may confirm it with the user before relying on it.", updated)
         self.assertIn("record that with `memory_feedback`.", updated)
+        self.assertIn(
+            "Use Breathing Memory retrieval to review relevant prior interactions",
+            updated,
+        )
+        self.assertIn("### Response Footer", updated)
+        self.assertIn(
+            "`BM: ok | agents=checked | user_anchor=... | acp=... | search=... | refs=...`",
+            updated,
+        )
+        self.assertIn("Insert a horizontal rule line immediately before the footer.", updated)
+        self.assertIn("`---`", updated)
+        self.assertIn("Do not add debug-only fields such as `prev_agent_anchor`, `feedbacks`", updated)
         self.assertLess(
-            updated.index("3. Call `memory_read_active_collaboration_policy(token_budget=512)`"),
-            updated.index("4. Search with `memory_search`"),
+            updated.index(
+                "3. Immediately after saving the current user message, call `memory_read_active_collaboration_policy(token_budget=512)` before any other tool call"
+            ),
+            updated.index(
+                "4. If needed for contextual understanding, continuity, or answer accuracy, use `memory_search` after ACP and before other substantive exploration"
+            ),
+        )
+        self.assertIn(
+            "rerun `memory_search` as many times as needed",
+            updated,
         )
         self.assertEqual(updated.count("<!-- BEGIN BREATHING MEMORY -->"), 1)
 
@@ -381,10 +401,29 @@ class CodexInstallTests(unittest.TestCase):
         self.assertIn("### Collaboration Policy", block)
         self.assertIn("memory_read_active_collaboration_policy(token_budget=512)", block)
         self.assertIn("may confirm it with the user before relying on it.", block)
-        self.assertLess(
-            block.index("3. Call `memory_read_active_collaboration_policy(token_budget=512)`"),
-            block.index("4. Search with `memory_search`"),
+        self.assertIn(
+            "Use Breathing Memory retrieval to review relevant prior interactions",
+            block,
         )
+        self.assertLess(
+            block.index(
+                "3. Immediately after saving the current user message, call `memory_read_active_collaboration_policy(token_budget=512)` before any other tool call"
+            ),
+            block.index(
+                "4. If needed for contextual understanding, continuity, or answer accuracy, use `memory_search` after ACP and before other substantive exploration"
+            ),
+        )
+        self.assertIn(
+            "rerun `memory_search` as many times as needed",
+            block,
+        )
+        self.assertIn("### Response Footer", block)
+        self.assertIn(
+            "`BM: ok | agents=checked | user_anchor=... | acp=... | search=... | refs=...`",
+            block,
+        )
+        self.assertIn("Insert a horizontal rule line immediately before the footer.", block)
+        self.assertIn("`---`", block)
         self.assertIn("### Feedback Attribution", block)
         self.assertIn("skip `memory_feedback` rather than guessing.", block)
         self.assertIn(

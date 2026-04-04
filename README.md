@@ -28,6 +28,7 @@ breathing-memory install-codex
 
 `breathing-memory install-codex` registers the `breathing-memory` MCP server with the currently supported client, pins that registration to a stable project identity for the current repository, and creates or updates the managed Breathing Memory block in the current repository's `AGENTS.md`.
 The default path is the user-level Codex config. If you want repository-local Codex config instead, choose it explicitly with `breathing-memory install-codex --codex-config repo`.
+After upgrading the package, rerun `breathing-memory install-codex` to refresh the managed Breathing Memory block in `AGENTS.md`.
 
 Published package:
 
@@ -53,6 +54,7 @@ Useful commands:
 - `breathing-memory serve`: start the stdio MCP server
 - `breathing-memory warmup`: eagerly load the semantic embedding backend for the current environment
 - `breathing-memory inspect-memory --json`: inspect current memory state
+- after `pip install -U ...`, rerun `breathing-memory install-codex` to refresh the managed `AGENTS.md` guidance
 
 Codex registration targets:
 

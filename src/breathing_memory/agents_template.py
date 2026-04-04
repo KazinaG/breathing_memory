@@ -17,8 +17,8 @@ For every user turn in this repository, the agent must use the MCP tools in this
 
 1. If the immediately previous final agent answer has not yet been remembered, check `memory_recent` for the latest remembered `agent` fragment with the same `reply_to`; if the latest remembered fragment already has the same content, skip the duplicate save, otherwise save it with `memory_remember(actor="agent")`
 2. Check `memory_recent` before saving the current user message; use `reply_to + content` as the first duplicate check, and if needed use a very recent `actor + content` fallback before calling `memory_remember(actor="user")`
-3. Call `memory_read_active_collaboration_policy(token_budget=512)` before producing the next final answer
-4. Search with `memory_search` before producing the next final answer
+3. Immediately after saving the current user message, call `memory_read_active_collaboration_policy(token_budget=512)` before any other tool call
+4. If needed for contextual understanding, continuity, or answer accuracy, use `memory_search` after ACP and before other substantive exploration
 
 Use the returned previous-agent `anchor_id` as the current user's `reply_to` when the user is replying to the immediately previous answer.
 When the user is replying or forking from an earlier remembered anchor, pass that target as the user's `reply_to` instead.
@@ -45,12 +45,13 @@ For a root user message, omit `reply_to`.
 ### Search Query
 """
 
-AGENTS_SEARCH_QUERY_COMMON = """- `memory_search.query` must be chosen by the MCP-calling agent for the current user request.
+AGENTS_SEARCH_QUERY_COMMON = """- Use Breathing Memory retrieval to review relevant prior interactions when that would improve contextual understanding, continuity, or answer accuracy for the current user request.
+- `memory_search.query` must be chosen by the MCP-calling agent for the current user request.
 - Keep the query in the user's language and avoid unnecessary translation.
 - Use the default `search_effort` of `32` unless there is a concrete reason to choose a different valid value up front.
 - Start with a `result_count` of `4` unless there is a concrete reason to choose a different valid value up front.
 - If retrieval is cleaner when limited to one side of the conversation, `memory_search` may use `actor="user"` or `actor="agent"`.
-- If the first search result looks insufficient, rerun `memory_search` with a broader `result_count`, a higher `search_effort`, or both.
+- If the first search result looks insufficient, rerun `memory_search` as many times as needed with a broader `result_count`, a higher `search_effort`, or both.
 - Treat `result_count` as powers of two from the base `4`, and `search_effort` as powers of two from the base `32`.
 """
 
@@ -71,6 +72,20 @@ AGENTS_BLOCK_SUFFIX = """
 - Track which fragments returned by `memory_search` or `memory_read_active_collaboration_policy` materially inform the final answer while drafting it.
 - If the deferred final answer materially uses fragments returned by `memory_search` or `memory_read_active_collaboration_policy`, pass those fragment ids as `source_fragment_ids` when that answer is persisted on the next user turn.
 - If no retrieved fragment materially informed the final answer, omit `source_fragment_ids`.
+
+### Response Footer
+
+- In every final user-facing answer, append a single-line footer after the main response body.
+- Insert a horizontal rule line immediately before the footer.
+- Use this exact shape:
+  `---`
+  `BM: ok | agents=checked | user_anchor=... | acp=... | search=... | refs=...`
+- `agents=checked` is a self-check that the agent reread or actively followed this AGENTS guidance for the current turn.
+- `user_anchor` is the current user message anchor id for this turn.
+- `acp` is the count returned by `memory_read_active_collaboration_policy`.
+- `search` is the count returned by `memory_search`.
+- `refs` is the number of fragment ids actually passed as `source_fragment_ids` for the deferred final answer; use `0` when none were materially used.
+- Do not add debug-only fields such as `prev_agent_anchor`, `feedbacks`, or per-source breakdowns in the standard footer.
 
 ### Collaboration Policy
 

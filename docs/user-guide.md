@@ -48,6 +48,7 @@ If `breathing-memory[semantic]` is installed and HNSW support is available, `doc
 After a successful run, it also performs a lightweight registration post-check and prints the active project identity, the resolved DB path, the effective retrieval mode, and the next verification step.
 By default it writes to the user-level Codex config. If you want repository-local Codex config instead, choose it explicitly with `--codex-config repo`.
 Before it writes the Codex registration, it also checks whether the default Breathing Memory app-data root is writable. If that preflight fails, set `BREATHING_MEMORY_DB_PATH` to a writable SQLite path and rerun the command.
+After upgrading the package, rerun `breathing-memory install-codex` to refresh the managed Breathing Memory block in `AGENTS.md`.
 
 Codex registration targets:
 
