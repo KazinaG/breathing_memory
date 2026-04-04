@@ -11,6 +11,12 @@ AGENTS_BLOCK_PREFIX = """## Breathing Memory
 
 This repository uses Breathing Memory during agent work in this repository.
 
+### Turn Start
+
+- At the start of every user turn in this repository, directly open and read the repository-local `AGENTS.md` file before any other substantive tool use.
+- Previously loaded context, memory, summaries, search results, quoted snippets, or assumptions do not satisfy this requirement.
+- Do not inspect other repository files, run repository search, or make code changes before this direct `AGENTS.md` read is completed.
+
 ### Required Flow
 
 For every user turn in this repository, the agent must use the MCP tools in this order:
@@ -20,12 +26,11 @@ For every user turn in this repository, the agent must use the MCP tools in this
 3. Immediately after saving the current user message, call `memory_read_active_collaboration_policy()` before any other tool call
 4. If needed for contextual understanding, continuity, or answer accuracy, use `memory_search` after ACP and before other substantive exploration
 
-Use the returned previous-agent `anchor_id` as the current user's `reply_to` when the user is replying to the immediately previous answer.
-When the user is replying or forking from an earlier remembered anchor, pass that target as the user's `reply_to` instead.
-For a root user message, omit `reply_to`.
+### Save and Threading
 
-### What To Save
-
+- Use the returned previous-agent `anchor_id` as the current user's `reply_to` when the user is replying to the immediately previous answer.
+- When the user is replying or forking from an earlier remembered anchor, pass that target as the user's `reply_to` instead.
+- For a root user message, omit `reply_to`.
 - Save every user message.
 - Save each final user-facing answer on the next user turn.
 - Do not save intermediary commentary, progress updates, or tool-status messages.
@@ -34,6 +39,9 @@ For a root user message, omit `reply_to`.
 - `memory_remember` suppresses duplicate deferred `agent` capture for the same `reply_to` and content, but callers must still pass accurate `reply_to` values and capture timing.
 - For `user` messages, use caller-side `memory_recent` checks before `memory_remember` instead of relying on engine-side duplicate suppression.
 - If no later user turn arrives, the final agent answer may remain unremembered.
+
+### Collaboration Policy Capture
+
 - When a reusable rule about how to collaborate with the user becomes clear, the agent may save one or more derived `agent` fragments with `kind="collaboration_policy"`.
 - This may be derived either from explicit user feedback or from broader conversational context when the caller judges it likely to be reusable.
 - Prefer saving collaboration-policy fragments only when they are likely to affect future behavior, choices, or response style.
@@ -42,10 +50,14 @@ For a root user message, omit `reply_to`.
 - Keep each `collaboration_policy` fragment focused on a single reusable rule.
 - Use the same `reply_to` as the current turn's user anchor, but treat these fragments as derived policy memory rather than conversational threading.
 
-### Search Query
+### Retrieval Guidance
 """
 
-AGENTS_SEARCH_QUERY_COMMON = """- Use Breathing Memory retrieval to review relevant prior interactions when that would improve contextual understanding, continuity, or answer accuracy for the current user request.
+AGENTS_SEARCH_QUERY_COMMON = """- Use `memory_read_active_collaboration_policy()` to preload collaboration-policy memory before forming the task query and answering.
+- Use collaboration-policy memory to shape how to answer or proceed, not as a substitute for task-memory retrieval.
+- If remembered collaboration context seems relevant but uncertain, the agent may confirm it with the user before relying on it.
+- If needed, run an additional `memory_search(..., kind="collaboration_policy")` for targeted clarification.
+- Use Breathing Memory retrieval to review relevant prior interactions when that would improve contextual understanding, continuity, or answer accuracy for the current user request.
 - `memory_search.query` must be chosen by the MCP-calling agent for the current user request.
 - Keep the query in the user's language and avoid unnecessary translation.
 - Use the default `search_effort` of `32` unless there is a concrete reason to choose a different valid value up front.
@@ -67,11 +79,15 @@ AGENTS_SEARCH_QUERY_SEMANTIC = """- Choose a query optimized for semantic retrie
 
 AGENTS_BLOCK_SUFFIX = """
 
-### Source References
+### References and Feedback
 
 - Track which fragments returned by `memory_search` or `memory_read_active_collaboration_policy` materially inform the final answer while drafting it.
 - If the deferred final answer materially uses fragments returned by `memory_search` or `memory_read_active_collaboration_policy`, pass those fragment ids as `source_fragment_ids` when that answer is persisted on the next user turn.
 - If no retrieved fragment materially informed the final answer, omit `source_fragment_ids`.
+
+- When a user message clearly confirms, corrects, or evaluates remembered information, record that with `memory_feedback`.
+- Decide whether that feedback applies to the immediately previous answer fragment, to referenced fragments used by that answer, or to both.
+- If the target of the feedback is ambiguous, skip `memory_feedback` rather than guessing.
 
 ### Response Footer
 
@@ -80,25 +96,12 @@ AGENTS_BLOCK_SUFFIX = """
 - Use this exact shape:
   `---`
   `BM: ok | agents=checked | user_anchor=... | acp=... | search=... | refs=...`
-- `agents=checked` is a self-check that the agent reread or actively followed this AGENTS guidance for the current turn.
+- `agents=checked` is a self-check that the agent directly reread or actively followed this AGENTS guidance for the current turn.
 - `user_anchor` is the current user message anchor id for this turn.
 - `acp` is the count returned by `memory_read_active_collaboration_policy`.
 - `search` is the count returned by `memory_search`.
 - `refs` is the number of fragment ids actually passed as `source_fragment_ids` for the deferred final answer; use `0` when none were materially used.
 - Do not add debug-only fields such as `prev_agent_anchor`, `feedbacks`, or per-source breakdowns in the standard footer.
-
-### Collaboration Policy
-
-- Use `memory_read_active_collaboration_policy()` to preload collaboration-policy memory before forming the task query and answering.
-- Use collaboration-policy memory to shape how to answer or proceed, not as a substitute for task-memory retrieval.
-- If remembered collaboration context seems relevant but uncertain, the agent may confirm it with the user before relying on it.
-- If needed, run an additional `memory_search(..., kind="collaboration_policy")` for targeted clarification.
-
-### Feedback Attribution
-
-- When a user message clearly confirms, corrects, or evaluates remembered information, record that with `memory_feedback`.
-- Decide whether that feedback applies to the immediately previous answer fragment, to referenced fragments used by that answer, or to both.
-- If the target of the feedback is ambiguous, skip `memory_feedback` rather than guessing.
 
 ### Failure Policy
 

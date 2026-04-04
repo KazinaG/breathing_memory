@@ -355,6 +355,23 @@ class CodexInstallTests(unittest.TestCase):
         self.assertIn('memory_remember(actor="user")', updated)
         self.assertIn("check `memory_recent`", updated)
         self.assertIn("very recent `actor + content` fallback", updated)
+        self.assertIn("### Turn Start", updated)
+        self.assertIn(
+            "directly open and read the repository-local `AGENTS.md` file before any other substantive tool use.",
+            updated,
+        )
+        self.assertIn(
+            "Previously loaded context, memory, summaries, search results, quoted snippets, or assumptions do not satisfy this requirement.",
+            updated,
+        )
+        self.assertIn(
+            "Do not inspect other repository files, run repository search, or make code changes before this direct `AGENTS.md` read is completed.",
+            updated,
+        )
+        self.assertIn("### Save and Threading", updated)
+        self.assertIn("### Collaboration Policy Capture", updated)
+        self.assertIn("### Retrieval Guidance", updated)
+        self.assertIn("### References and Feedback", updated)
         self.assertIn("Keep the query in the user's language and avoid unnecessary translation.", updated)
         self.assertIn('`memory_search` may use `actor="user"` or `actor="agent"`', updated)
         self.assertIn("memory_read_active_collaboration_policy()", updated)
@@ -376,6 +393,10 @@ class CodexInstallTests(unittest.TestCase):
         self.assertIn("Insert a horizontal rule line immediately before the footer.", updated)
         self.assertIn("`---`", updated)
         self.assertIn("Do not add debug-only fields such as `prev_agent_anchor`, `feedbacks`", updated)
+        self.assertIn(
+            "`agents=checked` is a self-check that the agent directly reread or actively followed this AGENTS guidance for the current turn.",
+            updated,
+        )
         self.assertLess(
             updated.index(
                 "3. Immediately after saving the current user message, call `memory_read_active_collaboration_policy()` before any other tool call"
@@ -396,9 +417,17 @@ class CodexInstallTests(unittest.TestCase):
         self.assertIn("Choose a query optimized for lexical retrieval.", block)
         self.assertIn("Use keyword- or phrase-oriented queries when they improve lexical retrieval.", block)
         self.assertIn('`memory_search` may use `actor="user"` or `actor="agent"`', block)
+        self.assertIn("### Turn Start", block)
+        self.assertIn(
+            "directly open and read the repository-local `AGENTS.md` file before any other substantive tool use.",
+            block,
+        )
         self.assertIn("Use `memory_recent` as the caller-side first check", block)
         self.assertIn("For `user` messages, use caller-side `memory_recent` checks", block)
-        self.assertIn("### Collaboration Policy", block)
+        self.assertIn("### Save and Threading", block)
+        self.assertIn("### Collaboration Policy Capture", block)
+        self.assertIn("### Retrieval Guidance", block)
+        self.assertIn("### References and Feedback", block)
         self.assertIn("memory_read_active_collaboration_policy()", block)
         self.assertIn("may confirm it with the user before relying on it.", block)
         self.assertIn(
@@ -424,7 +453,6 @@ class CodexInstallTests(unittest.TestCase):
         )
         self.assertIn("Insert a horizontal rule line immediately before the footer.", block)
         self.assertIn("`---`", block)
-        self.assertIn("### Feedback Attribution", block)
         self.assertIn("skip `memory_feedback` rather than guessing.", block)
         self.assertIn(
             "This may be derived either from explicit user feedback or from broader conversational context when the caller judges it likely to be reusable.",
