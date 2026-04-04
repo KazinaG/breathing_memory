@@ -244,6 +244,7 @@ def install_codex_registration(
         f"- Total capacity: {int(memory_config.total_capacity_mb * (1 << 20))} bytes ({memory_config.total_capacity_mb:g} MB)",
         f"- Effective retrieval mode: {retrieval['effective_mode']} ({retrieval['resolution_reason']})",
         "- Run `breathing-memory doctor` to verify the installation.",
+        "- After future package upgrades, rerun `breathing-memory install-codex` to refresh the managed `AGENTS.md` guidance.",
         "- Open this repository in Codex and start using the registered MCP server.",
     ]
     if not retrieval["semantic_extra_available"]:
@@ -301,6 +302,14 @@ def doctor(
     identity_source, identity_value = resolve_project_identity(cwd=working_directory, env=diagnostic_env)
     db_path = memory_config.db_path
     semantic_status = inspect_semantic_status(memory_config)
+    guidance_mode = resolve_agents_guidance_mode(
+        retrieval_mode=memory_config.retrieval_mode,
+        semantic_available=semantic_status["semantic_extra_available"],
+    )
+    agents_guidance = inspect_agents_guidance_status(
+        working_directory=working_directory,
+        guidance_mode=guidance_mode,
+    )
     fallback_db_path = resolve_db_path(cwd=working_directory, env=command_env)
     total_capacity_mb = memory_config.total_capacity_mb
     total_capacity = int(total_capacity_mb * (1 << 20))
@@ -325,6 +334,7 @@ def doctor(
         ),
         "db_exists": db_path.exists(),
         "retrieval": semantic_status,
+        "agents_guidance": agents_guidance,
         "total_capacity_mb": total_capacity_mb,
         "total_capacity": total_capacity,
         "codex_registration": registration_status,
@@ -335,11 +345,13 @@ def doctor(
             app_data_root_writable=app_data_root_writable,
             retrieval=semantic_status,
             registration_status=registration_status,
+            agents_guidance=agents_guidance,
         ),
         "next_steps": build_doctor_next_steps(
             breathing_memory_command=shutil.which("breathing-memory", path=command_env.get("PATH")),
             codex_command=codex_path,
             registration_status=registration_status,
+            agents_guidance=agents_guidance,
             db_exists=db_path.exists(),
             retrieval=semantic_status,
             fallback_db_path=fallback_db_path,
@@ -424,6 +436,7 @@ def build_doctor_warnings(
     app_data_root_writable: bool,
     retrieval: Mapping[str, Any],
     registration_status: Mapping[str, Any],
+    agents_guidance: Mapping[str, Any],
 ) -> list[str]:
     warnings: list[str] = []
     if not app_data_root_writable and DB_PATH_ENV_VAR not in env:
@@ -448,6 +461,16 @@ def build_doctor_warnings(
         warnings.append(
             "Configured retrieval_mode is 'lite', but the optional semantic extra is not available in this Python environment."
         )
+    if agents_guidance.get("status") == "outdated":
+        warnings.append(
+            "The managed `AGENTS.md` guidance is outdated for this installed package. Rerun "
+            "`breathing-memory install-codex` to refresh it."
+        )
+    if agents_guidance.get("status") == "malformed":
+        warnings.append(
+            "The managed Breathing Memory block in `AGENTS.md` is malformed. Rerun "
+            "`breathing-memory install-codex` after repairing or replacing that block."
+        )
     return warnings
 
 
@@ -455,6 +478,7 @@ def build_doctor_next_steps(
     breathing_memory_command: str | None,
     codex_command: str | None,
     registration_status: Mapping[str, Any],
+    agents_guidance: Mapping[str, Any],
     db_exists: bool,
     retrieval: Mapping[str, Any],
     fallback_db_path: Path,
@@ -485,7 +509,11 @@ def build_doctor_next_steps(
     if status == "check_failed":
         return ["Fix the Codex registration check failure, then rerun `breathing-memory doctor`."]
     if status == "configured" and not db_exists:
-        steps = ["Codex registration is pinned to a stable project identity."]
+        steps = []
+        agents_step = build_agents_guidance_next_step(agents_guidance)
+        if agents_step is not None:
+            steps.append(agents_step)
+        steps.append("Codex registration is pinned to a stable project identity.")
         if fallback_db_path.exists() and active_db_path != fallback_db_path:
             steps.append(
                 f"If you want to keep existing memory, move `{fallback_db_path}` to `{active_db_path}` manually."
@@ -497,7 +525,16 @@ def build_doctor_next_steps(
             steps.append("Start or continue a conversation to build the HNSW index and enable `default` retrieval.")
         return steps
     if status == "configured":
-        steps = ["Codex registration is pinned to a stable project identity.", "Breathing Memory looks ready for this repository."]
+        steps = []
+        agents_step = build_agents_guidance_next_step(agents_guidance)
+        if agents_step is not None:
+            steps.append(agents_step)
+        steps.extend(
+            [
+                "Codex registration is pinned to a stable project identity.",
+                "Breathing Memory looks ready for this repository.",
+            ]
+        )
         if not retrieval.get("semantic_extra_available"):
             steps.append("Optional: install `breathing-memory[semantic]` to enable semantic retrieval.")
         elif not retrieval.get("hnsw_index_ready"):
@@ -634,6 +671,7 @@ def format_doctor_report(report: Mapping[str, Any]) -> str:
     environment = report["environment"]
     identity = report["project_identity"]
     retrieval = report["retrieval"]
+    agents_guidance = report["agents_guidance"]
     lines = [
         f"Python: {report['python_executable']} ({report['python_version']})",
         f"Working directory: {report['working_directory']}",
@@ -656,6 +694,7 @@ def format_doctor_report(report: Mapping[str, Any]) -> str:
         f"HNSW index ready: {'yes' if retrieval['hnsw_index_ready'] else 'no'} ({retrieval['hnsw_reason']})",
         f"HNSW index path: {retrieval['hnsw_index_path']}",
         f"Embedding model: {retrieval['embedding_model'] or 'not available'}",
+        f"AGENTS guidance: {agents_guidance['status']}",
         f"Total capacity: {report['total_capacity']} bytes",
         f"Codex registration: {registration['status']}",
         f"Codex registration source: {registration.get('source', 'unknown')}",
@@ -955,6 +994,46 @@ def resolve_inspect_memory_config(
         registration_status=registration_status,
     )
     return resolve_memory_config(cwd=working_directory, env=resolved_env)
+
+
+def inspect_agents_guidance_status(
+    *,
+    working_directory: Path,
+    guidance_mode: str,
+) -> dict[str, Any]:
+    agents_path = working_directory / AGENTS_FILENAME
+    result = {
+        "status": "missing",
+        "path": str(agents_path),
+        "managed_block_present": False,
+    }
+    if not agents_path.exists() or not agents_path.is_file():
+        return result
+    try:
+        current = agents_path.read_text(encoding="utf-8")
+    except OSError:
+        return {**result, "status": "unreadable"}
+    start_index = current.find(AGENTS_BLOCK_START)
+    end_index = current.find(AGENTS_BLOCK_END)
+    if start_index == -1 and end_index == -1:
+        return result
+    if start_index == -1 or end_index == -1 or end_index < start_index:
+        return {**result, "status": "malformed", "managed_block_present": True}
+    try:
+        expected = upsert_agents_block(current, guidance_mode=guidance_mode)
+    except CLIError:
+        return {**result, "status": "malformed", "managed_block_present": True}
+    status = "configured" if current == expected else "outdated"
+    return {**result, "status": status, "managed_block_present": True}
+
+
+def build_agents_guidance_next_step(agents_guidance: Mapping[str, Any]) -> str | None:
+    status = agents_guidance.get("status")
+    if status == "outdated":
+        return "Rerun `breathing-memory install-codex` to refresh the managed `AGENTS.md` guidance for this package version."
+    if status == "malformed":
+        return "Repair the managed Breathing Memory block in `AGENTS.md`, then rerun `breathing-memory install-codex`."
+    return None
 
 
 def _format_total_capacity_mb(value: float) -> str:

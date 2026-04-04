@@ -39,6 +39,7 @@ breathing-memory doctor
 - which retrieval mode is configured and which mode will actually be used at runtime
 - whether the optional semantic extra is available in the current Python environment
 - whether the expected Codex MCP registration already exists
+- whether the managed Breathing Memory block in `AGENTS.md` looks current for the installed package
 - which next action is recommended from the current state
 
 In container-like environments, `doctor` also warns when the default app-data root does not appear to be a dedicated mount, because memory may not survive container rebuilds in that setup.
@@ -49,6 +50,7 @@ After a successful run, it also performs a lightweight registration post-check a
 By default it writes to the user-level Codex config. If you want repository-local Codex config instead, choose it explicitly with `--codex-config repo`.
 Before it writes the Codex registration, it also checks whether the default Breathing Memory app-data root is writable. If that preflight fails, set `BREATHING_MEMORY_DB_PATH` to a writable SQLite path and rerun the command.
 After upgrading the package, rerun `breathing-memory install-codex` to refresh the managed Breathing Memory block in `AGENTS.md`.
+If you forget, `breathing-memory doctor` will warn when the managed `AGENTS.md` guidance is stale for the installed package.
 
 Codex registration targets:
 

@@ -348,10 +348,14 @@ class CodexInstallTests(unittest.TestCase):
 
             with patch("breathing_memory.cli.shutil.which", return_value="/usr/bin/codex"):
                 message = install_codex_registration(runner=runner, env={"PATH": "/usr/bin"}, cwd=Path(tempdir))
-
-            self.assertIn("Updated AGENTS.md", message)
             updated = agents_path.read_text(encoding="utf-8")
-            self.assertIn("Keep this note.", updated)
+
+        self.assertIn("Updated AGENTS.md", message)
+        self.assertIn(
+            "After future package upgrades, rerun `breathing-memory install-codex` to refresh the managed `AGENTS.md` guidance.",
+            message,
+        )
+        self.assertIn("Keep this note.", updated)
         self.assertIn('memory_remember(actor="user")', updated)
         self.assertIn("check `memory_recent`", updated)
         self.assertIn("very recent `actor + content` fallback", updated)
@@ -860,6 +864,7 @@ class CodexInstallTests(unittest.TestCase):
         self.assertEqual(report["codex_registration"]["command_source"], "path")
         self.assertEqual(report["diagnostic_context"], "codex_registration")
         self.assertEqual(report["db_path_source"], "codex_registration")
+        self.assertEqual(report["agents_guidance"]["status"], "missing")
         self.assertEqual(
             report["next_steps"],
             [
@@ -973,6 +978,48 @@ args = ["serve"]
         self.assertEqual(report["codex_registration"]["command_source"], "absolute_path")
         self.assertEqual(report["codex_registration"]["config_entries"]["repo_local"], True)
         self.assertEqual(report["codex_registration"]["config_entries"]["home"], False)
+
+    def test_doctor_warns_when_managed_agents_guidance_is_outdated(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            repo = Path(tempdir)
+            agents_path = repo / "AGENTS.md"
+            agents_path.write_text(
+                "# AGENTS\n\n<!-- BEGIN BREATHING MEMORY -->\nold block\n<!-- END BREATHING MEMORY -->\n",
+                encoding="utf-8",
+            )
+            binding = resolve_codex_registration_binding(cwd=repo, env={"PATH": "/usr/bin"})
+            runner = FakeRunner(
+                [
+                    subprocess.CompletedProcess(
+                        ["codex", "mcp", "get", "breathing-memory", "--json"],
+                        0,
+                        registration_stdout(binding["env"]),
+                        "",
+                    )
+                ]
+            )
+
+            with patch(
+                "breathing_memory.cli.shutil.which",
+                side_effect=lambda name, path=None: "/usr/bin/codex" if name == "codex" else "/usr/bin/breathing-memory",
+            ):
+                with patch("breathing_memory.cli.semantic_extra_available", return_value=False):
+                    report = json.loads(
+                        doctor(
+                            json_output=True,
+                            runner=runner,
+                            env={"PATH": "/usr/bin", "HOME": tempdir},
+                            cwd=repo,
+                        )
+                    )
+
+        self.assertEqual(report["agents_guidance"]["status"], "outdated")
+        self.assertTrue(report["warnings"])
+        self.assertIn("managed `AGENTS.md` guidance is outdated", report["warnings"][-1])
+        self.assertEqual(
+            report["next_steps"][0],
+            "Rerun `breathing-memory install-codex` to refresh the managed `AGENTS.md` guidance for this package version.",
+        )
 
     def test_doctor_warns_when_default_app_data_root_is_not_writable(self) -> None:
         with patch("breathing_memory.cli.get_app_data_root", return_value=Path("/nonexistent/protected/root")):

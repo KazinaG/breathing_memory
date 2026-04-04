@@ -50,7 +50,7 @@ breathing-memory install-codex
 
 Useful commands:
 
-- `breathing-memory doctor`: inspect installation, active project identity, DB path selection, Codex registration state, and effective retrieval mode
+- `breathing-memory doctor`: inspect installation, active project identity, DB path selection, Codex registration state, effective retrieval mode, and whether the managed `AGENTS.md` guidance is stale for the installed package
 - `breathing-memory serve`: start the stdio MCP server
 - `breathing-memory warmup`: eagerly load the semantic embedding backend for the current environment
 - `breathing-memory inspect-memory --json`: inspect current memory state
