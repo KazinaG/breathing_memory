@@ -21,7 +21,8 @@ from .agents_template import (
     semantic_extra_available,
 )
 from .config import MemoryConfig, TOTAL_CAPACITY_MB_ENV_VAR, resolve_total_capacity_mb
-from .engine import BreathingMemoryEngine
+from .core import BreathingMemoryEngine as CoreBreathingMemoryEngine
+from .factory import create_core_engine, resolve_memory_config
 from .mcp_server import serve_stdio_server
 from .runtime import (
     DB_PATH_ENV_VAR,
@@ -122,7 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def serve() -> None:
-    asyncio.run(serve_stdio_server(config=MemoryConfig()))
+    asyncio.run(serve_stdio_server(config=resolve_memory_config()))
 
 
 def warmup(
@@ -132,7 +133,7 @@ def warmup(
     command_env = dict(os.environ if env is None else env)
     working_directory = Path.cwd() if cwd is None else Path(cwd)
     memory_config = resolve_memory_config(cwd=working_directory, env=command_env)
-    engine = BreathingMemoryEngine(config=memory_config)
+    engine = create_core_engine(config=memory_config)
     try:
         if not engine.warmup_embeddings():
             return (
@@ -260,7 +261,7 @@ def inspect_memory(
     cwd: Path | None = None,
 ) -> str:
     memory_config = resolve_inspect_memory_config(runner=runner, env=env, cwd=cwd)
-    engine = BreathingMemoryEngine(config=memory_config)
+    engine = create_core_engine(config=memory_config)
     try:
         report = build_memory_report(engine)
     finally:
@@ -564,7 +565,7 @@ def inspect_hnsw_status(memory_config: MemoryConfig) -> dict[str, Any]:
     )
 
 
-def build_memory_report(engine: BreathingMemoryEngine) -> dict[str, Any]:
+def build_memory_report(engine: CoreBreathingMemoryEngine) -> dict[str, Any]:
     store = engine.store
     fragments = store.list_fragments()
     anchors = {anchor.id: anchor for anchor in store.list_anchors()}
@@ -604,8 +605,8 @@ def build_memory_report(engine: BreathingMemoryEngine) -> dict[str, Any]:
         "fragment_count": len(fragments),
         "active_fragment_count": len(fragments),
         "deleted_fragment_count": deleted_fragment_count,
-        "working_count": stats["working_count"],
-        "holding_count": stats["holding_count"],
+        "working_count": stats.working_count,
+        "holding_count": stats.holding_count,
         "root_count": active_root_count,
         "missing_reply_count": missing_reply_count,
         "reference_log_count": len(store.list_references()),
@@ -928,17 +929,6 @@ def ensure_install_app_data_writable(env: Mapping[str, str], db_path: Path) -> N
         f"Planned DB path: {db_path}\n"
         "Set BREATHING_MEMORY_DB_PATH to a writable SQLite path before rerunning "
         "`breathing-memory install-codex`."
-    )
-
-
-def resolve_memory_config(
-    *,
-    cwd: Path | None = None,
-    env: Mapping[str, str] | None = None,
-) -> MemoryConfig:
-    return MemoryConfig(
-        db_path=resolve_db_path(cwd=cwd, env=env),
-        total_capacity_mb=resolve_total_capacity_mb(env=env),
     )
 
 
