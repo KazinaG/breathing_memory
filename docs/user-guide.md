@@ -106,9 +106,7 @@ from breathing_memory.core import (
 engine = create_engine()
 engine.remember(RememberRequest(content="hello", actor="user"))
 engine.search(SearchRequest(query="hello"))
-engine.read_active_collaboration_policy(
-    ReadActiveCollaborationPolicyRequest(token_budget=512)
-)
+engine.read_active_collaboration_policy(ReadActiveCollaborationPolicyRequest())
 engine.close()
 ```
 
@@ -159,6 +157,7 @@ If you want to keep memory from an older unpinned Codex registration, move the e
 - `BREATHING_MEMORY_DB_PATH`: explicit SQLite database path override
 - `BREATHING_MEMORY_PROJECT_ID`: explicit project identity override for storage isolation
 - `BREATHING_MEMORY_TOTAL_CAPACITY_MB`: advanced override for total remembered-fragment capacity
+- `BREATHING_MEMORY_ACP_TOKEN_BUDGET`: advanced override for the default collaboration-policy token budget when the caller omits `token_budget`
 
 `BREATHING_MEMORY_DB_PATH` has the highest priority. If it is set, project auto-resolution is skipped.
 

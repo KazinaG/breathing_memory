@@ -8,6 +8,7 @@ from typing import Mapping
 from .runtime import resolve_db_path
 
 TOTAL_CAPACITY_MB_ENV_VAR = "BREATHING_MEMORY_TOTAL_CAPACITY_MB"
+ACP_TOKEN_BUDGET_ENV_VAR = "BREATHING_MEMORY_ACP_TOKEN_BUDGET"
 
 
 def resolve_total_capacity_mb(env: Mapping[str, str] | None = None) -> float:
@@ -24,10 +25,25 @@ def resolve_total_capacity_mb(env: Mapping[str, str] | None = None) -> float:
     return value
 
 
+def resolve_default_acp_token_budget(env: Mapping[str, str] | None = None) -> int:
+    environment = env if env is not None else os.environ
+    raw = environment.get(ACP_TOKEN_BUDGET_ENV_VAR, "").strip()
+    if not raw:
+        return 512
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{ACP_TOKEN_BUDGET_ENV_VAR} must be a positive integer") from exc
+    if value <= 0:
+        raise ValueError(f"{ACP_TOKEN_BUDGET_ENV_VAR} must be a positive integer")
+    return value
+
+
 @dataclass(frozen=True)
 class MemoryConfig:
     db_path: Path = field(default_factory=resolve_db_path)
     total_capacity_mb: float = field(default_factory=resolve_total_capacity_mb)
+    default_acp_token_budget: int = field(default_factory=resolve_default_acp_token_budget)
     retrieval_mode: str = "auto"
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 

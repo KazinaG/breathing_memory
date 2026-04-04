@@ -4,7 +4,12 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Mapping, Optional
 
-from .config import EngineTuning, MemoryConfig, resolve_total_capacity_mb
+from .config import (
+    EngineTuning,
+    MemoryConfig,
+    resolve_default_acp_token_budget,
+    resolve_total_capacity_mb,
+)
 from .core.ports import AnnIndex, CompressionBackend, EmbeddingBackend, Store
 from .core.service import BreathingMemoryEngine as CoreBreathingMemoryEngine
 from .runtime import resolve_db_path
@@ -20,6 +25,7 @@ def resolve_memory_config(
     config = MemoryConfig(
         db_path=resolve_db_path(cwd=cwd, env=env),
         total_capacity_mb=resolve_total_capacity_mb(env=env),
+        default_acp_token_budget=resolve_default_acp_token_budget(env=env),
     )
     if retrieval_mode is None and embedding_model is None:
         return config

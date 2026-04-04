@@ -105,9 +105,7 @@ from breathing_memory.core import (
 engine = create_engine()
 engine.remember(RememberRequest(content="hello", actor="user"))
 engine.search(SearchRequest(query="hello"))
-engine.read_active_collaboration_policy(
-    ReadActiveCollaborationPolicyRequest(token_budget=512)
-)
+engine.read_active_collaboration_policy(ReadActiveCollaborationPolicyRequest())
 engine.close()
 ```
 

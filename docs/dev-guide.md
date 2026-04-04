@@ -42,9 +42,7 @@ from breathing_memory.core import (
 engine = create_engine()
 engine.remember(RememberRequest(content="hello", actor="user"))
 engine.search(SearchRequest(query="hello"))
-engine.read_active_collaboration_policy(
-    ReadActiveCollaborationPolicyRequest(token_budget=512)
-)
+engine.read_active_collaboration_policy(ReadActiveCollaborationPolicyRequest())
 ```
 
 When a consumer needs to inspect or override the resolved runtime location without rebuilding the rest of the wiring, use `breathing_memory.core.resolve_memory_config(...)` and pass the result back to `create_engine(...)`.
@@ -79,9 +77,7 @@ from breathing_memory.core import (
 memory = create_engine()
 memory.remember(RememberRequest(content="hello", actor="user"))
 hits = memory.search(SearchRequest(query="hello"))
-policy = memory.read_active_collaboration_policy(
-    ReadActiveCollaborationPolicyRequest(token_budget=512)
-)
+policy = memory.read_active_collaboration_policy(ReadActiveCollaborationPolicyRequest())
 ```
 
 Treat `breathing_memory.core` as the primary in-process contract. Treat `breathing_memory.engine` as a compatibility path for older dict-shaped callers.

@@ -760,7 +760,7 @@ Purpose:
 
 Input:
 
-- `token_budget`: optional integer, default determined by the caller; minimum `1`
+- `token_budget`: optional integer, default determined by runtime configuration when omitted; minimum `1`
 
 Output:
 

@@ -631,7 +631,7 @@ class BreathingMemoryEngine:
         return value
 
     def _normalize_token_budget(self, token_budget: Optional[int]) -> int:
-        value = 512 if token_budget is None else int(token_budget)
+        value = self.config.default_acp_token_budget if token_budget is None else int(token_budget)
         if value <= 0:
             raise ValueError("token_budget must be a positive integer")
         return value

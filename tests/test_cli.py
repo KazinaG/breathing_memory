@@ -357,7 +357,7 @@ class CodexInstallTests(unittest.TestCase):
         self.assertIn("very recent `actor + content` fallback", updated)
         self.assertIn("Keep the query in the user's language and avoid unnecessary translation.", updated)
         self.assertIn('`memory_search` may use `actor="user"` or `actor="agent"`', updated)
-        self.assertIn("memory_read_active_collaboration_policy(token_budget=512)", updated)
+        self.assertIn("memory_read_active_collaboration_policy()", updated)
         self.assertIn('kind="collaboration_policy"', updated)
         self.assertIn("broader conversational context", updated)
         self.assertIn("affect future behavior, choices, or response style", updated)
@@ -378,7 +378,7 @@ class CodexInstallTests(unittest.TestCase):
         self.assertIn("Do not add debug-only fields such as `prev_agent_anchor`, `feedbacks`", updated)
         self.assertLess(
             updated.index(
-                "3. Immediately after saving the current user message, call `memory_read_active_collaboration_policy(token_budget=512)` before any other tool call"
+                "3. Immediately after saving the current user message, call `memory_read_active_collaboration_policy()` before any other tool call"
             ),
             updated.index(
                 "4. If needed for contextual understanding, continuity, or answer accuracy, use `memory_search` after ACP and before other substantive exploration"
@@ -399,7 +399,7 @@ class CodexInstallTests(unittest.TestCase):
         self.assertIn("Use `memory_recent` as the caller-side first check", block)
         self.assertIn("For `user` messages, use caller-side `memory_recent` checks", block)
         self.assertIn("### Collaboration Policy", block)
-        self.assertIn("memory_read_active_collaboration_policy(token_budget=512)", block)
+        self.assertIn("memory_read_active_collaboration_policy()", block)
         self.assertIn("may confirm it with the user before relying on it.", block)
         self.assertIn(
             "Use Breathing Memory retrieval to review relevant prior interactions",
@@ -407,7 +407,7 @@ class CodexInstallTests(unittest.TestCase):
         )
         self.assertLess(
             block.index(
-                "3. Immediately after saving the current user message, call `memory_read_active_collaboration_policy(token_budget=512)` before any other tool call"
+                "3. Immediately after saving the current user message, call `memory_read_active_collaboration_policy()` before any other tool call"
             ),
             block.index(
                 "4. If needed for contextual understanding, continuity, or answer accuracy, use `memory_search` after ACP and before other substantive exploration"

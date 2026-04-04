@@ -17,7 +17,7 @@ For every user turn in this repository, the agent must use the MCP tools in this
 
 1. If the immediately previous final agent answer has not yet been remembered, check `memory_recent` for the latest remembered `agent` fragment with the same `reply_to`; if the latest remembered fragment already has the same content, skip the duplicate save, otherwise save it with `memory_remember(actor="agent")`
 2. Check `memory_recent` before saving the current user message; use `reply_to + content` as the first duplicate check, and if needed use a very recent `actor + content` fallback before calling `memory_remember(actor="user")`
-3. Immediately after saving the current user message, call `memory_read_active_collaboration_policy(token_budget=512)` before any other tool call
+3. Immediately after saving the current user message, call `memory_read_active_collaboration_policy()` before any other tool call
 4. If needed for contextual understanding, continuity, or answer accuracy, use `memory_search` after ACP and before other substantive exploration
 
 Use the returned previous-agent `anchor_id` as the current user's `reply_to` when the user is replying to the immediately previous answer.
@@ -89,7 +89,7 @@ AGENTS_BLOCK_SUFFIX = """
 
 ### Collaboration Policy
 
-- Use `memory_read_active_collaboration_policy(token_budget=512)` to preload collaboration-policy memory before forming the task query and answering.
+- Use `memory_read_active_collaboration_policy()` to preload collaboration-policy memory before forming the task query and answering.
 - Use collaboration-policy memory to shape how to answer or proceed, not as a substitute for task-memory retrieval.
 - If remembered collaboration context seems relevant but uncertain, the agent may confirm it with the user before relying on it.
 - If needed, run an additional `memory_search(..., kind="collaboration_policy")` for targeted clarification.

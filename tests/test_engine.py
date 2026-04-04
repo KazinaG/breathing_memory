@@ -376,6 +376,26 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(result.items[0].id, remembered.id)
         self.assertGreater(result.used_token_budget, 1)
 
+    def test_read_active_collaboration_policy_uses_config_default_budget_when_omitted(self) -> None:
+        config = MemoryConfig(db_path=self.root / "core-policy-default.sqlite3", default_acp_token_budget=1)
+        core_engine = create_core_engine(config=config)
+        self.addCleanup(core_engine.close)
+        core_engine.remember(RememberRequest(content="General answer", actor="agent"))
+        remembered = core_engine.remember(
+            RememberRequest(
+                content="Detailed collaboration guidance for future turns.",
+                actor="agent",
+                kind="collaboration_policy",
+            )
+        )
+
+        result = core_engine.read_active_collaboration_policy(ReadActiveCollaborationPolicyRequest())
+
+        self.assertEqual(result.count, 1)
+        self.assertEqual(result.items[0].id, remembered.id)
+        self.assertEqual(result.token_budget, 1)
+        self.assertGreater(result.used_token_budget, 1)
+
     def test_core_typed_api_preserves_validation_error_messages(self) -> None:
         core_engine = make_core_engine(self.root / "core-errors")
         self.addCleanup(core_engine.close)
@@ -453,6 +473,17 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(resolved.retrieval_mode, "super_lite")
             self.assertEqual(resolved.embedding_model, "local/test-model")
             self.assertEqual(resolved.total_capacity_mb, MemoryConfig().total_capacity_mb)
+            self.assertEqual(resolved.default_acp_token_budget, MemoryConfig().default_acp_token_budget)
+
+    def test_resolve_memory_config_supports_acp_token_budget_env_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            workspace = Path(tempdir)
+            resolved = resolve_memory_config(
+                cwd=workspace,
+                env={"PATH": "", "BREATHING_MEMORY_ACP_TOKEN_BUDGET": "768"},
+            )
+
+            self.assertEqual(resolved.default_acp_token_budget, 768)
 
     def test_core_factory_aliases_match_top_level_factory(self) -> None:
         self.assertIs(create_engine, create_core_engine)
