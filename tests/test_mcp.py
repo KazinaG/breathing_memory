@@ -72,6 +72,33 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_tool_definitions_preserve_contract_shape(self) -> None:
+        async def callback(session: ClientSession, init: types.InitializeResult):
+            del init
+            return await session.list_tools()
+
+        tools = await self._with_session(callback)
+        by_name = {tool.name: tool for tool in tools.tools}
+
+        remember_schema = by_name["memory_remember"].inputSchema
+        self.assertEqual(remember_schema["required"], ["content", "actor"])
+        self.assertEqual(remember_schema["properties"]["actor"]["enum"], ["user", "agent"])
+
+        search_schema = by_name["memory_search"].inputSchema
+        self.assertEqual(search_schema["required"], ["query"])
+        self.assertEqual(search_schema["properties"]["result_count"]["minimum"], 4)
+        self.assertEqual(search_schema["properties"]["search_effort"]["minimum"], 32)
+
+        feedback_schema = by_name["memory_feedback"].inputSchema
+        self.assertEqual(
+            feedback_schema["required"],
+            ["from_anchor_id", "fragment_id", "verdict"],
+        )
+        self.assertEqual(
+            feedback_schema["properties"]["verdict"]["enum"],
+            ["positive", "neutral", "negative"],
+        )
+
     async def test_list_tools_starts_background_embedding_warmup(self) -> None:
         calls: list[str] = []
         original = self.engine.start_background_embedding_warmup
@@ -137,6 +164,109 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(feedback.isError)
         self.assertEqual(feedback.structuredContent["confidence_score"], 0.5)
         self.assertEqual(stats.structuredContent["fragment_count"], 1)
+
+    async def test_memory_remember_response_shape_is_stable(self) -> None:
+        async def callback(session: ClientSession, init: types.InitializeResult):
+            del init
+            return await session.call_tool(
+                "memory_remember",
+                {
+                    "content": "hello memory",
+                    "actor": "user",
+                },
+            )
+
+        result = await self._with_session(callback)
+        self.assertFalse(result.isError)
+        self.assertEqual(
+            set(result.structuredContent.keys()),
+            {
+                "id",
+                "anchor_id",
+                "reply_to",
+                "kind",
+                "content",
+                "content_length",
+                "layer",
+                "compression_fail_count",
+                "reference_score",
+                "confidence_score",
+                "search_priority",
+            },
+        )
+
+    async def test_memory_search_response_shape_is_stable_without_diagnostics(self) -> None:
+        async def callback(session: ClientSession, init: types.InitializeResult):
+            del init
+            remembered = await session.call_tool(
+                "memory_remember",
+                {
+                    "content": "hello memory",
+                    "actor": "user",
+                },
+            )
+            result = await session.call_tool(
+                "memory_search",
+                {"query": "hello", "result_count": 4, "search_effort": 32},
+            )
+            return remembered, result
+
+        remembered, result = await self._with_session(callback)
+        self.assertFalse(result.isError)
+        item = result.structuredContent["items"][0]
+        self.assertEqual(item["id"], remembered.structuredContent["id"])
+        self.assertEqual(
+            set(result.structuredContent.keys()),
+            {"items", "count"},
+        )
+        self.assertEqual(
+            set(item.keys()),
+            {
+                "id",
+                "anchor_id",
+                "parent_id",
+                "actor",
+                "reply_to",
+                "kind",
+                "content",
+                "content_length",
+                "layer",
+                "reference_score",
+                "confidence_score",
+                "search_priority",
+            },
+        )
+
+    async def test_memory_stats_response_shape_is_stable(self) -> None:
+        async def callback(session: ClientSession, init: types.InitializeResult):
+            del init
+            await session.call_tool(
+                "memory_remember",
+                {
+                    "content": "hello memory",
+                    "actor": "user",
+                },
+            )
+            return await session.call_tool("memory_stats", {})
+
+        result = await self._with_session(callback)
+        self.assertFalse(result.isError)
+        self.assertEqual(
+            set(result.structuredContent.keys()),
+            {
+                "fragment_count",
+                "working_count",
+                "holding_count",
+                "working_usage",
+                "holding_usage",
+                "working_budget",
+                "holding_budget",
+                "working_ratio",
+                "recent_compress_count",
+                "recent_delete_count",
+                "parameters",
+            },
+        )
 
     async def test_memory_search_can_include_diagnostics(self) -> None:
         async def callback(session: ClientSession, init: types.InitializeResult):
@@ -253,6 +383,31 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         result = await self._with_session(callback)
         self.assertTrue(result.isError)
         self.assertIn("exactly one of fragment_id or anchor_id", result.content[0].text)
+
+    async def test_memory_search_rejects_invalid_result_count_with_stable_message(self) -> None:
+        async def callback(session: ClientSession, init: types.InitializeResult):
+            del init
+            return await session.call_tool(
+                "memory_search",
+                {
+                    "query": "hello",
+                    "result_count": 12,
+                    "search_effort": 32,
+                },
+            )
+
+        result = await self._with_session(callback)
+        self.assertTrue(result.isError)
+        self.assertEqual(result.content[0].text, "result_count must be 4 * 2^n")
+
+    async def test_unknown_tool_returns_stable_error_message(self) -> None:
+        async def callback(session: ClientSession, init: types.InitializeResult):
+            del init
+            return await session.call_tool("memory_nope", {})
+
+        result = await self._with_session(callback)
+        self.assertTrue(result.isError)
+        self.assertEqual(result.content[0].text, "Unknown tool: memory_nope")
 
     async def test_memory_remember_deduplicates_agent_capture(self) -> None:
         async def callback(session: ClientSession, init: types.InitializeResult):

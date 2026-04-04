@@ -7,8 +7,31 @@ import unittest
 
 from breathing_memory.compression import CompressionResult, StubCompressionBackend
 from breathing_memory.config import EngineTuning, MemoryConfig
+from breathing_memory.core import (
+    AnnIndex,
+    BreathingMemoryEngine as CoreBreathingMemoryEngine,
+    CompressionBackend,
+    EmbeddingBackend,
+    FeedbackRequest,
+    FeedbackResult,
+    FetchRequest,
+    FragmentView,
+    ReadActiveCollaborationPolicyRequest,
+    ReadActiveCollaborationPolicyResponse,
+    RecentRequest,
+    RememberRequest,
+    SearchItemView,
+    SearchRequest,
+    SearchResponse,
+    StatsResult,
+    Store,
+    create_engine,
+    resolve_memory_config as resolve_core_memory_config,
+)
 from breathing_memory.embeddings import StubEmbeddingBackend, cosine_similarity
+from breathing_memory.factory import create_core_engine, resolve_memory_config
 from breathing_memory.engine import BreathingMemoryEngine
+from breathing_memory.runtime import resolve_db_path
 from breathing_memory.store import SQLiteStore
 
 
@@ -122,7 +145,152 @@ def make_engine(
     )
 
 
+def make_core_engine(
+    root: Path,
+    total_capacity: int = 160,
+    retrieval_mode: str = "super_lite",
+    embedding_backend: StubEmbeddingBackend | None = None,
+    ann_index: StubAnnIndex | None = None,
+    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    tuning: EngineTuning | None = None,
+) -> CoreBreathingMemoryEngine:
+    config = MemoryConfig(
+        db_path=root / "memory.sqlite3",
+        total_capacity_mb=total_capacity / (1024 * 1024),
+        retrieval_mode=retrieval_mode,
+        embedding_model=embedding_model,
+    )
+    return CoreBreathingMemoryEngine(
+        config=config,
+        tuning=tuning,
+        compression_backend=StubCompressionBackend(),
+        embedding_backend=embedding_backend,
+        ann_index=ann_index,
+    )
+
+
 class EngineTests(unittest.TestCase):
+    def test_core_exports_expected_public_symbols(self) -> None:
+        from breathing_memory import core as core_module
+
+        self.assertEqual(
+            set(core_module.__all__),
+            {
+                "AnnIndex",
+                "BreathingMemoryEngine",
+                "CompressionBackend",
+                "EmbeddingBackend",
+                "FeedbackRequest",
+                "FeedbackResult",
+                "FetchRequest",
+                "FragmentView",
+                "ReadActiveCollaborationPolicyRequest",
+                "ReadActiveCollaborationPolicyResponse",
+                "RecentRequest",
+                "RememberRequest",
+                "SearchItemView",
+                "SearchRequest",
+                "SearchResponse",
+                "SearchStatusError",
+                "StatsResult",
+                "Store",
+                "create_engine",
+                "resolve_memory_config",
+            },
+        )
+
+    def test_core_exports_dependency_ports(self) -> None:
+        self.assertIsNotNone(Store)
+        self.assertIsNotNone(EmbeddingBackend)
+        self.assertIsNotNone(AnnIndex)
+        self.assertIsNotNone(CompressionBackend)
+
+    def test_factory_helpers_are_exported(self) -> None:
+        from breathing_memory import create_core_engine as exported_create_core_engine
+        from breathing_memory import resolve_memory_config as exported_resolve_memory_config
+
+        self.assertIs(exported_create_core_engine, create_core_engine)
+        self.assertIs(exported_resolve_memory_config, resolve_memory_config)
+
+    def test_typed_request_defaults_are_stable(self) -> None:
+        remember = RememberRequest(content="hello", actor="user")
+        recent = RecentRequest()
+        search = SearchRequest(query="hello")
+        policy = ReadActiveCollaborationPolicyRequest()
+        fetch = FetchRequest()
+        feedback = FeedbackRequest(from_anchor_id=1, fragment_id=2, verdict="positive")
+
+        self.assertEqual(remember.source_fragment_ids, ())
+        self.assertIsNone(remember.reply_to)
+        self.assertIsNone(remember.kind)
+        self.assertEqual(recent.limit, 4)
+        self.assertFalse(search.include_diagnostics)
+        self.assertIsNone(policy.token_budget)
+        self.assertIsNone(fetch.fragment_id)
+        self.assertIsNone(fetch.anchor_id)
+        self.assertEqual(feedback.verdict, "positive")
+
+    def test_typed_response_field_shapes_are_stable(self) -> None:
+        self.assertEqual(
+            tuple(FragmentView.__dataclass_fields__),
+            (
+                "id",
+                "anchor_id",
+                "reply_to",
+                "kind",
+                "content",
+                "content_length",
+                "layer",
+                "compression_fail_count",
+                "reference_score",
+                "confidence_score",
+                "search_priority",
+            ),
+        )
+        self.assertEqual(
+            tuple(SearchItemView.__dataclass_fields__),
+            (
+                "id",
+                "anchor_id",
+                "parent_id",
+                "actor",
+                "reply_to",
+                "kind",
+                "content",
+                "content_length",
+                "layer",
+                "reference_score",
+                "confidence_score",
+                "search_priority",
+                "diagnostics",
+            ),
+        )
+        self.assertEqual(tuple(SearchResponse.__dataclass_fields__), ("items", "count", "status"))
+        self.assertEqual(
+            tuple(ReadActiveCollaborationPolicyResponse.__dataclass_fields__),
+            ("items", "count", "token_budget", "used_token_budget", "truncated"),
+        )
+        self.assertEqual(
+            tuple(FeedbackResult.__dataclass_fields__),
+            ("fragment_id", "verdict", "confidence_score", "search_priority"),
+        )
+        self.assertEqual(
+            tuple(StatsResult.__dataclass_fields__),
+            (
+                "fragment_count",
+                "working_count",
+                "holding_count",
+                "working_usage",
+                "holding_usage",
+                "working_budget",
+                "holding_budget",
+                "working_ratio",
+                "recent_compress_count",
+                "recent_delete_count",
+                "parameters",
+            ),
+        )
+
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         self.root = Path(self.tempdir.name)
@@ -167,6 +335,128 @@ class EngineTests(unittest.TestCase):
         )
 
         self.assertEqual(self.engine._confidence_score(fragment["id"]), 0.5)
+
+    def test_remember_typed_returns_fragment_view(self) -> None:
+        core_engine = make_core_engine(self.root / "core-remember")
+        self.addCleanup(core_engine.close)
+        typed = core_engine.remember(RememberRequest(content="alpha memory", actor="user"))
+        payload = self.engine.remember(content="beta memory", actor="user")
+
+        self.assertEqual(typed.content, "alpha memory")
+        self.assertEqual(typed.layer, "working")
+        self.assertEqual(payload["content"], "beta memory")
+
+    def test_search_typed_returns_search_response(self) -> None:
+        core_engine = make_core_engine(self.root / "core-search")
+        self.addCleanup(core_engine.close)
+        remembered = core_engine.remember(RememberRequest(content="search me", actor="user"))
+        result = core_engine.search(SearchRequest(query="search", include_diagnostics=True))
+
+        self.assertEqual(result.count, 1)
+        self.assertEqual(result.items[0].id, remembered.id)
+        self.assertEqual(result.items[0].diagnostics["retrieval_mode"], "super_lite")
+
+    def test_read_active_collaboration_policy_typed_returns_budget_metadata(self) -> None:
+        core_engine = make_core_engine(self.root / "core-policy")
+        self.addCleanup(core_engine.close)
+        core_engine.remember(RememberRequest(content="General answer", actor="agent"))
+        remembered = core_engine.remember(
+            RememberRequest(
+                content="Detailed collaboration guidance for future turns.",
+                actor="agent",
+                kind="collaboration_policy",
+            )
+        )
+
+        result = core_engine.read_active_collaboration_policy(
+            ReadActiveCollaborationPolicyRequest(token_budget=1)
+        )
+
+        self.assertEqual(result.count, 1)
+        self.assertEqual(result.items[0].id, remembered.id)
+        self.assertGreater(result.used_token_budget, 1)
+
+    def test_core_typed_api_preserves_validation_error_messages(self) -> None:
+        core_engine = make_core_engine(self.root / "core-errors")
+        self.addCleanup(core_engine.close)
+
+        with self.assertRaisesRegex(ValueError, "content must not be empty"):
+            core_engine.remember(RememberRequest(content="   ", actor="user"))
+        with self.assertRaisesRegex(ValueError, "result_count must be 4 \\* 2\\^n"):
+            core_engine.search(SearchRequest(query="hello", result_count=12))
+        with self.assertRaisesRegex(ValueError, "token_budget must be a positive integer"):
+            core_engine.read_active_collaboration_policy(
+                ReadActiveCollaborationPolicyRequest(token_budget=0)
+            )
+        with self.assertRaisesRegex(ValueError, "exactly one of fragment_id or anchor_id is required"):
+            core_engine.fetch(FetchRequest())
+
+    def test_legacy_shim_accepts_typed_requests_and_returns_dict_payloads(self) -> None:
+        remembered = self.engine.remember(RememberRequest(content="hello", actor="user"))
+        searched = self.engine.search(SearchRequest(query="hello"))
+        fetched = self.engine.fetch(FetchRequest(fragment_id=remembered["id"]))
+        policy = self.engine.read_active_collaboration_policy(
+            ReadActiveCollaborationPolicyRequest(token_budget=512)
+        )
+        stats = self.engine.stats()
+
+        self.assertIsInstance(remembered, dict)
+        self.assertIsInstance(searched, dict)
+        self.assertIsInstance(fetched, dict)
+        self.assertIsInstance(policy, dict)
+        self.assertIsInstance(stats, dict)
+        self.assertEqual(searched["count"], 1)
+        self.assertEqual(fetched["items"][0]["id"], remembered["id"])
+
+    def test_create_core_engine_uses_project_scoped_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            workspace = Path(tempdir)
+            engine = create_core_engine(cwd=workspace, env={"PATH": ""})
+            self.addCleanup(engine.close)
+
+            self.assertIsInstance(engine, CoreBreathingMemoryEngine)
+            self.assertEqual(engine.config.db_path, resolve_db_path(cwd=workspace, env={"PATH": ""}))
+
+    def test_create_core_engine_passes_through_injected_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            workspace = Path(tempdir)
+            store = SQLiteStore(workspace / "custom.sqlite3")
+            embedding_backend = StubEmbeddingBackend({})
+            ann_index = StubAnnIndex()
+            compression_backend = StubCompressionBackend()
+            engine = create_engine(
+                cwd=workspace,
+                env={"PATH": ""},
+                store=store,
+                embedding_backend=embedding_backend,
+                ann_index=ann_index,
+                compression_backend=compression_backend,
+            )
+            self.addCleanup(engine.close)
+
+            self.assertIs(engine.store, store)
+            self.assertIs(engine.embedding_backend, embedding_backend)
+            self.assertIs(engine.ann_index, ann_index)
+            self.assertIs(engine.compression_backend, compression_backend)
+
+    def test_resolve_memory_config_supports_runtime_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            workspace = Path(tempdir)
+            resolved = resolve_memory_config(
+                cwd=workspace,
+                env={"PATH": ""},
+                retrieval_mode="super_lite",
+                embedding_model="local/test-model",
+            )
+
+            self.assertEqual(resolved.db_path, resolve_db_path(cwd=workspace, env={"PATH": ""}))
+            self.assertEqual(resolved.retrieval_mode, "super_lite")
+            self.assertEqual(resolved.embedding_model, "local/test-model")
+            self.assertEqual(resolved.total_capacity_mb, MemoryConfig().total_capacity_mb)
+
+    def test_core_factory_aliases_match_top_level_factory(self) -> None:
+        self.assertIs(create_engine, create_core_engine)
+        self.assertIs(resolve_core_memory_config, resolve_memory_config)
 
     def test_legacy_database_is_reset_and_backed_up(self) -> None:
         db_path = self.root / "legacy.sqlite3"

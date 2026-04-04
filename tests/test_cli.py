@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from unittest.mock import Mock
 
 from breathing_memory.cli import (
     CLIError,
@@ -615,22 +616,25 @@ class CodexInstallTests(unittest.TestCase):
         self.assertIn("broken", stderr.getvalue())
 
     def test_warmup_reports_missing_semantic_dependency(self) -> None:
-        with patch("breathing_memory.cli.BreathingMemoryEngine.warmup_embeddings", return_value=False):
+        engine = Mock()
+        engine.warmup_embeddings.return_value = False
+        with patch("breathing_memory.cli.create_core_engine", return_value=engine):
             message = warmup(env={"PATH": ""}, cwd=Path("/workspace"))
 
         self.assertIn("Semantic embedding backend is not available", message)
+        engine.close.assert_called_once()
 
     def test_main_runs_warmup_command(self) -> None:
         stdout = io.StringIO()
-        with patch(
-            "breathing_memory.cli.BreathingMemoryEngine.warmup_embeddings",
-            return_value=True,
-        ):
+        engine = Mock()
+        engine.warmup_embeddings.return_value = True
+        with patch("breathing_memory.cli.create_core_engine", return_value=engine):
             with contextlib.redirect_stdout(stdout):
                 status = main(["warmup"])
 
         self.assertEqual(status, 0)
         self.assertIn("warmed up", stdout.getvalue())
+        engine.close.assert_called_once()
 
     def test_inspect_memory_reports_fragment_counts_and_missing_replies(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
