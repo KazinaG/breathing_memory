@@ -158,6 +158,7 @@ If you want to keep memory from an older unpinned Codex registration, move the e
 - `BREATHING_MEMORY_PROJECT_ID`: explicit project identity override for storage isolation
 - `BREATHING_MEMORY_TOTAL_CAPACITY_MB`: advanced override for total remembered-fragment capacity
 - `BREATHING_MEMORY_ACP_TOKEN_BUDGET`: advanced override for the default collaboration-policy token budget when the caller omits `token_budget`
+- `BREATHING_MEMORY_MCP_PAYLOAD_MODE`: advanced override for MCP payload shape, `slim` or `debug`
 
 `BREATHING_MEMORY_DB_PATH` has the highest priority. If it is set, project auto-resolution is skipped.
 

@@ -474,6 +474,7 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(resolved.embedding_model, "local/test-model")
             self.assertEqual(resolved.total_capacity_mb, MemoryConfig().total_capacity_mb)
             self.assertEqual(resolved.default_acp_token_budget, MemoryConfig().default_acp_token_budget)
+            self.assertEqual(resolved.mcp_payload_mode, MemoryConfig().mcp_payload_mode)
 
     def test_resolve_memory_config_supports_acp_token_budget_env_override(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -484,6 +485,16 @@ class EngineTests(unittest.TestCase):
             )
 
             self.assertEqual(resolved.default_acp_token_budget, 768)
+
+    def test_resolve_memory_config_supports_mcp_payload_mode_env_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            workspace = Path(tempdir)
+            resolved = resolve_memory_config(
+                cwd=workspace,
+                env={"PATH": "", "BREATHING_MEMORY_MCP_PAYLOAD_MODE": "debug"},
+            )
+
+            self.assertEqual(resolved.mcp_payload_mode, "debug")
 
     def test_core_factory_aliases_match_top_level_factory(self) -> None:
         self.assertIs(create_engine, create_core_engine)

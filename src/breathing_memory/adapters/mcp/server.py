@@ -34,8 +34,50 @@ SERVER_INSTRUCTIONS = (
 ToolHandler = Callable[[BreathingMemoryEngine, dict[str, Any]], dict[str, Any]]
 
 
-def _payload(result: Any) -> dict[str, Any]:
-    return result_to_payload(result)
+def _payload(engine: BreathingMemoryEngine, result: Any) -> dict[str, Any]:
+    return result_to_payload(result, payload_mode=engine.config.mcp_payload_mode)
+
+
+def _remember_result(engine: Any, request: RememberRequest) -> Any:
+    if hasattr(engine, "remember_typed"):
+        return engine.remember_typed(request)
+    return engine.remember(request)
+
+
+def _search_result(engine: Any, request: SearchRequest) -> Any:
+    if hasattr(engine, "search_typed"):
+        return engine.search_typed(request)
+    return engine.search(request)
+
+
+def _policy_result(engine: Any, request: ReadActiveCollaborationPolicyRequest) -> Any:
+    if hasattr(engine, "read_active_collaboration_policy_typed"):
+        return engine.read_active_collaboration_policy_typed(request)
+    return engine.read_active_collaboration_policy(request)
+
+
+def _fetch_result(engine: Any, request: FetchRequest) -> Any:
+    if hasattr(engine, "fetch_typed"):
+        return engine.fetch_typed(request)
+    return engine.fetch(request)
+
+
+def _feedback_result(engine: Any, request: FeedbackRequest) -> Any:
+    if hasattr(engine, "feedback_typed"):
+        return engine.feedback_typed(request)
+    return engine.feedback(request)
+
+
+def _recent_result(engine: Any, request: RecentRequest) -> Any:
+    if hasattr(engine, "recent_typed"):
+        return engine.recent_typed(request)
+    return engine.recent(request)
+
+
+def _stats_result(engine: Any) -> Any:
+    if hasattr(engine, "stats_typed"):
+        return engine.stats_typed()
+    return engine.stats()
 
 
 def _package_version() -> str:
@@ -133,73 +175,65 @@ def _tool_definitions() -> list[types.Tool]:
 
 
 def _remember_handler(engine: BreathingMemoryEngine, arguments: dict[str, Any]) -> dict[str, Any]:
-    return _payload(engine.remember(
-        RememberRequest(
-            content=str(arguments["content"]),
-            actor=str(arguments["actor"]),
-            reply_to=arguments.get("reply_to"),
-            source_fragment_ids=tuple(arguments.get("source_fragment_ids", [])),
-            kind=arguments.get("kind"),
-        )
-    ))
+    request = RememberRequest(
+        content=str(arguments["content"]),
+        actor=str(arguments["actor"]),
+        reply_to=arguments.get("reply_to"),
+        source_fragment_ids=tuple(arguments.get("source_fragment_ids", [])),
+        kind=arguments.get("kind"),
+    )
+    return _payload(engine, _remember_result(engine, request))
 
 
 def _search_handler(engine: BreathingMemoryEngine, arguments: dict[str, Any]) -> dict[str, Any]:
-    return _payload(engine.search(
-        SearchRequest(
-            query=str(arguments["query"]),
-            result_count=arguments.get("result_count"),
-            search_effort=arguments.get("search_effort"),
-            actor=arguments.get("actor"),
-            kind=arguments.get("kind"),
-            include_diagnostics=bool(arguments.get("include_diagnostics", False)),
-        )
-    ))
+    request = SearchRequest(
+        query=str(arguments["query"]),
+        result_count=arguments.get("result_count"),
+        search_effort=arguments.get("search_effort"),
+        actor=arguments.get("actor"),
+        kind=arguments.get("kind"),
+        include_diagnostics=bool(arguments.get("include_diagnostics", False)),
+    )
+    return _payload(engine, _search_result(engine, request))
 
 
 def _read_active_collaboration_policy_handler(
     engine: BreathingMemoryEngine,
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
-    return _payload(engine.read_active_collaboration_policy(
-        ReadActiveCollaborationPolicyRequest(
-            token_budget=arguments.get("token_budget"),
-        )
-    ))
+    request = ReadActiveCollaborationPolicyRequest(token_budget=arguments.get("token_budget"))
+    return _payload(engine, _policy_result(engine, request))
 
 
 def _fetch_handler(engine: BreathingMemoryEngine, arguments: dict[str, Any]) -> dict[str, Any]:
-    return _payload(engine.fetch(
-        FetchRequest(
-            fragment_id=arguments.get("fragment_id"),
-            anchor_id=arguments.get("anchor_id"),
-        )
-    ))
+    request = FetchRequest(
+        fragment_id=arguments.get("fragment_id"),
+        anchor_id=arguments.get("anchor_id"),
+    )
+    return _payload(engine, _fetch_result(engine, request))
 
 
 def _feedback_handler(engine: BreathingMemoryEngine, arguments: dict[str, Any]) -> dict[str, Any]:
-    return _payload(engine.feedback(
-        FeedbackRequest(
-            from_anchor_id=int(arguments["from_anchor_id"]),
-            fragment_id=int(arguments["fragment_id"]),
-            verdict=str(arguments["verdict"]),
-        )
-    ))
+    request = FeedbackRequest(
+        from_anchor_id=int(arguments["from_anchor_id"]),
+        fragment_id=int(arguments["fragment_id"]),
+        verdict=str(arguments["verdict"]),
+    )
+    return _payload(engine, _feedback_result(engine, request))
 
 
 def _recent_handler(engine: BreathingMemoryEngine, arguments: dict[str, Any]) -> dict[str, Any]:
-    return _payload(engine.recent(
-        RecentRequest(
-            limit=int(arguments.get("limit", 4)),
-            actor=arguments.get("actor"),
-            reply_to=arguments.get("reply_to"),
-        )
-    ))
+    request = RecentRequest(
+        limit=int(arguments.get("limit", 4)),
+        actor=arguments.get("actor"),
+        reply_to=arguments.get("reply_to"),
+    )
+    return _payload(engine, _recent_result(engine, request))
 
 
 def _stats_handler(engine: BreathingMemoryEngine, arguments: dict[str, Any]) -> dict[str, Any]:
     del arguments
-    return _payload(engine.stats())
+    return _payload(engine, _stats_result(engine))
 
 
 TOOL_HANDLERS: dict[str, ToolHandler] = {

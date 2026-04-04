@@ -8,6 +8,7 @@ from .config import (
     EngineTuning,
     MemoryConfig,
     resolve_default_acp_token_budget,
+    resolve_mcp_payload_mode,
     resolve_total_capacity_mb,
 )
 from .core.ports import AnnIndex, CompressionBackend, EmbeddingBackend, Store
@@ -26,6 +27,7 @@ def resolve_memory_config(
         db_path=resolve_db_path(cwd=cwd, env=env),
         total_capacity_mb=resolve_total_capacity_mb(env=env),
         default_acp_token_budget=resolve_default_acp_token_budget(env=env),
+        mcp_payload_mode=resolve_mcp_payload_mode(env=env),
     )
     if retrieval_mode is None and embedding_model is None:
         return config

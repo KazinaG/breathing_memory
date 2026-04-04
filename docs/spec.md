@@ -749,6 +749,8 @@ sequenceDiagram
    - includes `anchor_id` for exact follow-up fetches
    - includes `reply_to` and `parent_id` as inspection metadata for the calling agent
    - includes `actor` and `kind` when available so the calling agent can filter or inspect the result set precisely
+   - in MCP `slim` payload mode, omits score and size metadata from normal search items
+   - in MCP `debug` payload mode, preserves the legacy richer payload shape
    - when `include_diagnostics = true`, each item may include retrieval-path details such as lexical rank or semantic similarity
    - client-side aliases such as `fast=32`, `balanced=64`, and `thorough=128` stay outside the public API
 
@@ -775,11 +777,7 @@ Output:
       reply_to,
       kind,
       content,
-      content_length,
       layer,
-      reference_score,
-      confidence_score,
-      search_priority
     },
     ...
   ],
@@ -789,6 +787,8 @@ Output:
   truncated
 }
 ```
+
+In MCP `debug` payload mode, each item also includes the legacy metadata fields such as `content_length`, `reference_score`, `confidence_score`, and `search_priority`.
 
 Behavior:
 

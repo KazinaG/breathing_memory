@@ -19,6 +19,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         config = MemoryConfig(
             db_path=Path(self.tempdir.name) / "memory.sqlite3",
             total_capacity_mb=120 / (1024 * 1024),
+            mcp_payload_mode="slim",
             retrieval_mode="super_lite",
         )
         self.engine = BreathingMemoryEngine(config=config)
@@ -162,7 +163,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(fetch.isError)
         self.assertEqual(fetch.structuredContent["count"], 1)
         self.assertFalse(feedback.isError)
-        self.assertEqual(feedback.structuredContent["confidence_score"], 0.5)
+        self.assertEqual(feedback.structuredContent["verdict"], "negative")
         self.assertEqual(stats.structuredContent["fragment_count"], 1)
 
     async def test_memory_remember_response_shape_is_stable(self) -> None:
@@ -185,13 +186,6 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
                 "anchor_id",
                 "reply_to",
                 "kind",
-                "content",
-                "content_length",
-                "layer",
-                "compression_fail_count",
-                "reference_score",
-                "confidence_score",
-                "search_priority",
             },
         )
 
@@ -229,12 +223,98 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
                 "reply_to",
                 "kind",
                 "content",
+                "layer",
+            },
+        )
+
+    async def test_memory_debug_payload_mode_preserves_legacy_shape(self) -> None:
+        debug_engine = BreathingMemoryEngine(
+            config=MemoryConfig(
+                db_path=Path(self.tempdir.name) / "debug-memory.sqlite3",
+                total_capacity_mb=120 / (1024 * 1024),
+                mcp_payload_mode="debug",
+                retrieval_mode="super_lite",
+            )
+        )
+        try:
+            async def callback(session: ClientSession, init: types.InitializeResult):
+                del init
+                remembered = await session.call_tool(
+                    "memory_remember",
+                    {
+                        "content": "hello memory",
+                        "actor": "user",
+                    },
+                )
+                search = await session.call_tool(
+                    "memory_search",
+                    {"query": "hello", "result_count": 4, "search_effort": 32},
+                )
+                feedback = await session.call_tool(
+                    "memory_feedback",
+                    {
+                        "from_anchor_id": remembered.structuredContent["anchor_id"],
+                        "fragment_id": remembered.structuredContent["id"],
+                        "verdict": "negative",
+                    },
+                )
+                return remembered, search, feedback
+
+            server = create_mcp_server(engine=debug_engine)
+            client_to_server_send, client_to_server_recv = anyio.create_memory_object_stream(0)
+            server_to_client_send, server_to_client_recv = anyio.create_memory_object_stream(0)
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(
+                    server.run,
+                    client_to_server_recv,
+                    server_to_client_send,
+                    server.create_initialization_options(),
+                    True,
+                )
+                async with ClientSession(server_to_client_recv, client_to_server_send) as session:
+                    init = await session.initialize()
+                    await session.list_tools()
+                    remembered, search, feedback = await callback(session, init)
+                tg.cancel_scope.cancel()
+        finally:
+            debug_engine.close()
+
+        self.assertEqual(
+            set(remembered.structuredContent.keys()),
+            {
+                "id",
+                "anchor_id",
+                "reply_to",
+                "kind",
+                "content",
+                "content_length",
+                "layer",
+                "compression_fail_count",
+                "reference_score",
+                "confidence_score",
+                "search_priority",
+            },
+        )
+        self.assertEqual(
+            set(search.structuredContent["items"][0].keys()),
+            {
+                "id",
+                "anchor_id",
+                "parent_id",
+                "actor",
+                "reply_to",
+                "kind",
+                "content",
                 "content_length",
                 "layer",
                 "reference_score",
                 "confidence_score",
                 "search_priority",
             },
+        )
+        self.assertEqual(
+            set(feedback.structuredContent.keys()),
+            {"fragment_id", "verdict", "confidence_score", "search_priority"},
         )
 
     async def test_memory_stats_response_shape_is_stable(self) -> None:
