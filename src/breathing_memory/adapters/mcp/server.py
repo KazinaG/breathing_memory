@@ -42,7 +42,7 @@ def _package_version() -> str:
     try:
         return version("breathing-memory")
     except PackageNotFoundError:
-        return "0.5.7"
+        return "0.6.0"
 
 
 def _tool_definitions() -> list[types.Tool]:
