@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    name: Unit Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: python -m pip install --upgrade pip && python -m pip install -e .
+
+      - name: Run test suite
+        run: python -m unittest discover -s tests
+
+  build-smoke:
+    name: Build Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: python -m pip install --upgrade pip build twine
+
+      - name: Build distribution packages
+        run: python -m build
+
+      - name: Check distribution metadata
+        run: python -m twine check dist/*
+
+      - name: Install built wheel and run doctor smoke test
+        run: |
+          python -m venv .venv-smoke
+          . .venv-smoke/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.whl
+          breathing-memory doctor
+
+  uv-tool-smoke:
+    name: uv Tool Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install via uv tool and verify repo-local Codex flow
+        run: |
+          set -euo pipefail
+          TMPDIR="$(mktemp -d)"
+          mkdir -p "$TMPDIR/home" "$TMPDIR/data" "$TMPDIR/config" "$TMPDIR/cache" "$TMPDIR/bin" "$TMPDIR/repo"
+          export HOME="$TMPDIR/home"
+          export XDG_DATA_HOME="$TMPDIR/data"
+          export XDG_CONFIG_HOME="$TMPDIR/config"
+          export XDG_CACHE_HOME="$TMPDIR/cache"
+          export UV_TOOL_BIN_DIR="$HOME/.local/bin"
+          export FAKE_CODEX_STATE_PATH="$TMPDIR/codex-state.json"
+          export PATH="$UV_TOOL_BIN_DIR:$TMPDIR/bin:$PATH"
+
+          cat > "$TMPDIR/bin/codex" <<EOF
+          #!/usr/bin/env bash
+          exec python "$GITHUB_WORKSPACE/tests/support/fake_codex.py" "\$@"
+          EOF
+          chmod +x "$TMPDIR/bin/codex"
+
+          git init -q "$TMPDIR/repo"
+
+          uv tool install "$GITHUB_WORKSPACE"
+
+          (
+            cd "$TMPDIR/repo"
+            breathing-memory doctor
+            breathing-memory install-codex --codex-config repo
+            test -f .codex/config.toml
+            test -f AGENTS.md
+            breathing-memory doctor --json > "$TMPDIR/doctor.json"
+          )
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path(os.environ["XDG_CACHE_HOME"]).parent.joinpath("doctor.json").read_text())
+          assert report["codex_registration"]["status"] == "configured", report
+          assert report["agents_guidance"]["status"] in {"current", "unknown"}, report
+          PY
