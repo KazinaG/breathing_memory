@@ -7,6 +7,7 @@ It is not the behavioral source of truth. Normative rules live in [spec.md](spec
 ## Setup Positioning
 
 Use [README.md](../README.md) for the shortest installation and quickstart path.
+`uv tool install` is the primary user installation path for the packaged CLI.
 
 This guide starts after that point and focuses on:
 
@@ -99,6 +100,12 @@ uv tool upgrade breathing-memory
 breathing-memory install-codex
 ```
 
+To remove a `uv tool` install:
+
+```bash
+uv tool uninstall breathing-memory
+```
+
 For first-time installation, the matching flow is:
 
 ```bash
@@ -106,6 +113,8 @@ uv tool install 'breathing-memory[semantic]'
 breathing-memory doctor
 breathing-memory install-codex
 ```
+
+The `semantic` extra is the recommended install target, but it is much larger than the minimal lexical-only package because it pulls local embedding dependencies. If you want the smallest initial install, use `uv tool install breathing-memory` and accept `super_lite` retrieval.
 
 ## In-Process Core API
 

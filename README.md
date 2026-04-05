@@ -19,7 +19,7 @@ Breathing Memory keeps collaboration context that an agent should remember but a
 
 ## Installation
 
-The intended long-term user path is:
+The recommended user path is:
 
 ```bash
 uv tool install 'breathing-memory[semantic]'
@@ -33,6 +33,12 @@ uv tool upgrade breathing-memory
 breathing-memory install-codex
 ```
 
+Remove an existing `uv tool` install with:
+
+```bash
+uv tool uninstall breathing-memory
+```
+
 `breathing-memory install-codex` registers the `breathing-memory` MCP server with the currently supported client, pins that registration to a stable project identity for the current repository, and creates or updates the managed Breathing Memory block in the current repository's `AGENTS.md`.
 If `uv` warns that its tool bin directory is not on `PATH`, run `uv tool update-shell`, open a new shell, and then continue.
 The default path is the user-level Codex config. If you want repository-local Codex config instead, choose it explicitly with `breathing-memory install-codex --codex-config repo`.
@@ -42,8 +48,10 @@ Published package:
 
 - recommended: `uv tool install 'breathing-memory[semantic]'`
 - minimal `super_lite` install: `uv tool install breathing-memory`
-- `pip` remains supported when you prefer a traditional Python environment workflow
+- `pip` remains supported for traditional Python environment workflows, but it is not the primary user path
 - contributor setup and unreleased local work: [docs/dev-guide.md](docs/dev-guide.md)
+
+The `semantic` extra provides the strongest retrieval path, but it is materially larger because it pulls local embedding dependencies. If you want the smallest install, start with the minimal `super_lite` variant.
 
 ## Quickstart
 
