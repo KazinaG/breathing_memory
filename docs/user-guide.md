@@ -44,6 +44,7 @@ breathing-memory doctor
 
 In container-like environments, `doctor` also warns when the default app-data root does not appear to be a dedicated mount, because memory may not survive container rebuilds in that setup.
 If `breathing-memory[semantic]` is installed and HNSW support is available, `doctor` will show that `auto` targets `default` even when the index still needs rebuild or repair; otherwise it will show `super_lite` or the internal `lite` fallback based on what the runtime can actually use.
+If you installed the CLI with `uv tool install ...` and `breathing-memory` is still not found on `PATH`, run `uv tool update-shell`, open a new shell, and retry `breathing-memory doctor`.
 
 `breathing-memory install-codex` registers the user-scoped MCP entry named `breathing-memory`, pins that Codex registration to a stable project identity for the current repository, and creates or updates the managed Breathing Memory block in the current repository's `AGENTS.md`.
 After a successful run, it also performs a lightweight registration post-check and prints the active project identity, the resolved DB path, the effective retrieval mode, and the next verification step.
@@ -90,6 +91,21 @@ Inspection commands:
 - `breathing-memory inspect-memory`: compact inspection output
 - `breathing-memory inspect-memory --json`: machine-readable memory state
 - `breathing-memory warmup`: eagerly load the semantic embedding backend for the current environment
+
+If you installed the CLI with `uv tool install ...`, upgrade it with:
+
+```bash
+uv tool upgrade breathing-memory
+breathing-memory install-codex
+```
+
+For first-time installation, the matching flow is:
+
+```bash
+uv tool install 'breathing-memory[semantic]'
+breathing-memory doctor
+breathing-memory install-codex
+```
 
 ## In-Process Core API
 
@@ -229,7 +245,7 @@ By default, the packaged runtime uses `super_lite`, which performs lexical retri
 If the optional semantic extra is installed:
 
 ```bash
-pip install 'breathing-memory[semantic]'
+uv tool install 'breathing-memory[semantic]'
 ```
 
 then runtime `auto` can resolve to:

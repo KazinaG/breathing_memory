@@ -7,14 +7,15 @@ This guide collects contributor-oriented setup details that do not belong in the
 Inside this repository:
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -e '.[semantic]'
+uv venv
+source .venv/bin/activate
+uv pip install -e '.[semantic]'
 python -m unittest discover -s tests
 python -m breathing_memory
 ```
 
 `python -m breathing_memory` and `python -m breathing_memory serve` both start the server.
+If you prefer the traditional tooling flow, `python -m venv` plus `pip install -e '.[semantic]'` remains valid.
 
 ## Repository Layout
 

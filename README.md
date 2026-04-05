@@ -22,18 +22,27 @@ Breathing Memory keeps collaboration context that an agent should remember but a
 The intended long-term user path is:
 
 ```bash
-pip install 'breathing-memory[semantic]'
+uv tool install 'breathing-memory[semantic]'
+breathing-memory install-codex
+```
+
+Upgrade an existing `uv tool` install with:
+
+```bash
+uv tool upgrade breathing-memory
 breathing-memory install-codex
 ```
 
 `breathing-memory install-codex` registers the `breathing-memory` MCP server with the currently supported client, pins that registration to a stable project identity for the current repository, and creates or updates the managed Breathing Memory block in the current repository's `AGENTS.md`.
+If `uv` warns that its tool bin directory is not on `PATH`, run `uv tool update-shell`, open a new shell, and then continue.
 The default path is the user-level Codex config. If you want repository-local Codex config instead, choose it explicitly with `breathing-memory install-codex --codex-config repo`.
 After upgrading the package, rerun `breathing-memory install-codex` to refresh the managed Breathing Memory block in `AGENTS.md`.
 
 Published package:
 
-- recommended: `pip install 'breathing-memory[semantic]'`
-- minimal `super_lite` install: `pip install breathing-memory`
+- recommended: `uv tool install 'breathing-memory[semantic]'`
+- minimal `super_lite` install: `uv tool install breathing-memory`
+- `pip` remains supported when you prefer a traditional Python environment workflow
 - contributor setup and unreleased local work: [docs/dev-guide.md](docs/dev-guide.md)
 
 ## Quickstart
@@ -41,9 +50,7 @@ Published package:
 Recommended first run:
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install 'breathing-memory[semantic]'
+uv tool install 'breathing-memory[semantic]'
 breathing-memory doctor
 breathing-memory install-codex
 ```
@@ -54,7 +61,7 @@ Useful commands:
 - `breathing-memory serve`: start the stdio MCP server
 - `breathing-memory warmup`: eagerly load the semantic embedding backend for the current environment
 - `breathing-memory inspect-memory --json`: inspect current memory state
-- after `pip install -U ...`, rerun `breathing-memory install-codex` to refresh the managed `AGENTS.md` guidance
+- after upgrading the package, rerun `breathing-memory install-codex` to refresh the managed `AGENTS.md` guidance
 
 Codex registration targets:
 
@@ -64,22 +71,22 @@ Codex registration targets:
 Environment-specific setup:
 
 - normal local environment
-  - `pip install 'breathing-memory[semantic]'`
+  - `uv tool install 'breathing-memory[semantic]'`
   - `breathing-memory doctor`
   - `breathing-memory install-codex`
 - repository-local Codex config, including DevContainer workflows that track `.codex/config.toml`
-  - `pip install 'breathing-memory[semantic]'`
+  - `uv tool install 'breathing-memory[semantic]'`
   - `breathing-memory doctor`
   - `breathing-memory install-codex --codex-config repo`
 - slim containers where native build dependencies may be missing
   - install Python headers and compiler toolchain first
-  - then run `pip install 'breathing-memory[semantic]'`
+  - then run `uv tool install 'breathing-memory[semantic]'`
   - confirm the effective mode with `breathing-memory doctor`
 - minimal lexical-only install
-  - `pip install breathing-memory`
+  - `uv tool install breathing-memory`
   - `breathing-memory install-codex`
 - environments where you want to preload the semantic model before a session
-  - `pip install 'breathing-memory[semantic]'`
+  - `uv tool install 'breathing-memory[semantic]'`
   - `breathing-memory warmup`
 
 ## Usage Surfaces
