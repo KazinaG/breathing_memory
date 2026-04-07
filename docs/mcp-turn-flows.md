@@ -56,11 +56,13 @@ flowchart TD
         E{Need to save previous final agent?}
         F[Reuse existing previous-agent anchor]
         G[memory_remember agent]
+        W1{{Wait for previous-agent anchor}}
     end
 
     subgraph P2[Phase 2: user duplicate resolution]
         I[memory_recent user exact check]
         J{Fallback duplicate from very-recent actor + content?}
+        W2{{Wait for exact + fallback duplicate checks}}
         K{Duplicate user save by reply_to + content?}
         L[Reuse existing user anchor]
         N[memory_remember user]
@@ -77,12 +79,12 @@ flowchart TD
     D --> E
     E -- No --> F
     E -- Yes --> G
-    F --> W1{{Wait for previous-agent anchor}}
+    F --> W1
     G --> W1
 
     W1 --> I
     C --> J
-    I --> W2{{Wait for exact + fallback duplicate checks}}
+    I --> W2
     J --> W2
     W2 --> K
     K -- Yes --> L
