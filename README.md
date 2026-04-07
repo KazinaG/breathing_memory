@@ -167,6 +167,7 @@ Runtime setup is intentionally framed as `super_lite` and `default`. Semantic wa
 | `docs/dev-guide.md` | contributor-oriented setup and codebase orientation | you are editing this repository or integrating against the typed core API during development |
 | `docs/spec.md` | normative behavior and implementation contract | you need the source of truth for runtime semantics, storage rules, and public behavior |
 | `docs/design-rationale.md` | adopted design decisions and tradeoffs | you need to understand why the current boundaries and policies exist |
+| `docs/mcp-turn-flows.md` | turn-start flow comparison for MCP callers | you need a visual comparison of the current AGENTS flow, a client-parallel sketch, and a bundled `memory_begin_turn` proposal |
 
 ## Further Reading
 
@@ -174,3 +175,4 @@ Runtime setup is intentionally framed as `super_lite` and `default`. Semantic wa
 - [docs/dev-guide.md](docs/dev-guide.md): contributor-oriented setup and repository layout
 - [docs/spec.md](docs/spec.md): normative behavior and implementation-facing rules
 - [docs/design-rationale.md](docs/design-rationale.md): adopted design choices and the reasons behind them
+- [docs/mcp-turn-flows.md](docs/mcp-turn-flows.md): visual turn-flow comparison for current and proposed MCP caller patterns

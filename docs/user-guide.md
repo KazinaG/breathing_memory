@@ -203,6 +203,8 @@ Breathing Memory currently exposes seven MCP tools:
 - `memory_feedback`
 - `memory_stats`
 
+For a visual comparison of the current caller flow and two future-facing alternatives, see [mcp-turn-flows.md](mcp-turn-flows.md).
+
 ### `memory_remember`
 
 Required inputs:
