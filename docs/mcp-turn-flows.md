@@ -96,16 +96,6 @@ flowchart TD
     O -- No --> R[Continue normal work]
     Q --> O
 
-    classDef wait fill:#fff2cc,stroke:#aa7a00,stroke-width:2px;
-    classDef action fill:#f8f9fa,stroke:#6b7280,stroke-width:1px;
-    classDef decision fill:#fdecec,stroke:#b94a48,stroke-width:1px;
-
-    style P0 fill:#eef6ff,stroke:#4a74a8,stroke-width:1px;
-    style P1 fill:#eef6ff,stroke:#4a74a8,stroke-width:1px;
-    style P2 fill:#eef6ff,stroke:#4a74a8,stroke-width:1px;
-    class W0,W1,W2,W3 wait;
-    class A,B,C,D,F,G,I,L,N,P,Q,R action;
-    class E,J,K,O decision;
 ```
 
 Notes:
@@ -117,7 +107,7 @@ Notes:
 - The caller resolves anchor threading from recent results before the exact user duplicate check runs.
 - Running ACP in parallel is coherent only if ACP loading is treated as independent from current-user save ordering.
 - This proposal keeps the real data dependencies while matching the observed pattern where callers inspect recent fragments and `anchor_id` values before finalizing saves.
-- The highlighted wait nodes show the actual dependency barriers: after phase-0 candidate gathering, after previous-agent anchor resolution, after exact user duplicate checking, and before retrieval starts.
+- The explicit `Wait ...` nodes show the actual dependency barriers: after phase-0 candidate gathering, after previous-agent anchor resolution, after exact user duplicate checking, and before retrieval starts.
 
 ## 3. Parked Bundled `memory_begin_turn` Sketch
 
