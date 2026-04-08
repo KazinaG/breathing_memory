@@ -1,139 +1,135 @@
 # MCP Turn Flows
 
-This document compares the current caller flow, an active client-parallel design target, and one parked bundled alternative for Breathing Memory turn start.
+This document focuses on the active client-parallel design target for Breathing Memory turn start.
 
 It is not the normative source of truth. Current required behavior still lives in [spec.md](spec.md) and in the managed Breathing Memory block that `breathing-memory install-codex` writes into `AGENTS.md`.
 
-## 1. Current AGENTS-Managed Flow
+## Active Design Target: Client-Parallel Sketch
 
-This is the current caller-side flow expected by the managed `AGENTS.md` guidance.
+### Design Goals
+
+- Minimize Codex decision turns first.
+- Keep the context needed for each turn as small as possible.
+- Treat `Read repository AGENTS.md` as a repository workflow gate, not as a memory-protocol RTT phase.
+- Gather enough candidate memory in the first round so later phases mostly decide and mutate instead of re-reading.
+
+### Sequence View
+
+This view shows who calls what, where waiting happens, and why the common case should collapse to two Codex decision turns.
 
 ```mermaid
-flowchart TD
-    A[Read repository AGENTS.md] --> B{Previous final agent answer already remembered?}
-    B -- No --> C[memory_recent actor=agent reply_to=current_user_reply_target]
-    C --> D{Duplicate deferred agent capture?}
-    D -- No --> E[memory_remember actor=agent]
-    D -- Yes --> F[Reuse existing agent anchor]
-    E --> G[Resolve previous agent anchor]
-    F --> G
-    B -- Yes --> G
-    G --> H[memory_recent actor=user reply_to=previous_agent_anchor]
-    H --> I{Duplicate user save?}
-    I -- No --> J[memory_remember actor=user reply_to=previous_agent_anchor]
-    I -- Yes --> K[Reuse existing user anchor]
-    J --> L[user_anchor ready]
-    K --> L
-    L --> M[memory_read_active_collaboration_policy]
-    M --> N{Need more retrieval for this answer?}
-    N -- Yes --> O[memory_search]
-    N -- No --> P[Continue normal work]
-    O --> N
+sequenceDiagram
+    participant Codex
+    participant BM as Breathing Memory MCP
+
+    Note over Codex: Repository workflow gate<br/>Read repository AGENTS.md
+
+    par Phase 0: candidate gathering
+        Codex->>BM: memory_recent(agent candidates)
+    and
+        Codex->>BM: memory_recent(user candidates)
+    and
+        Codex->>BM: memory_read_active_collaboration_policy()
+    end
+
+    BM-->>Codex: recent agent candidates
+    BM-->>Codex: recent user candidates
+    BM-->>Codex: ACP payload
+
+    Note over Codex: Phase 1: build execution plan<br/>resolve anchor threading<br/>decide duplicate handling
+
+    alt previous final agent must be saved
+        Codex->>BM: memory_remember(actor="agent")
+        BM-->>Codex: previous-agent anchor
+    else reuse previous-agent anchor
+        Note over Codex: Reuse previous-agent anchor
+    end
+
+    alt current user must be saved
+        Codex->>BM: memory_remember(actor="user", reply_to=...)
+        BM-->>Codex: user_anchor
+    else duplicate user save
+        Note over Codex: Reuse existing user anchor
+    end
+
+    opt need more retrieval for this answer
+        loop until enough context is gathered
+            Codex->>BM: memory_search(...)
+            BM-->>Codex: relevant fragments
+        end
+    end
+
+    Note over Codex: Continue normal work
 ```
 
 Notes:
 
-- This flow is compatible with the current managed `AGENTS.md` ordering.
-- `memory_remember(actor="user")` depends on the previous agent anchor when the user is replying to the immediately previous answer.
-- `memory_read_active_collaboration_policy` happens after the current user save and before other substantive tool calls.
+- The target common case is `gather -> mutate`, which keeps Codex to two decision turns.
+- The branch case becomes `gather -> remember agent -> remember user` when the current user save depends on a newly created previous-agent anchor.
+- ACP is loaded during phase 0 so it is ready before retrieval planning and normal work continue.
 
-## 2. Client-Parallel Sketch
+### Flowchart View
 
-This proposal separates repository workflow constraints from the memory protocol itself. In the memory protocol layer, the caller first gathers recent agent candidates, recent user duplicate candidates, and ACP in parallel, then resolves anchor threading and duplicate handling from those results.
+This view shows the same design as phases and dependency barriers rather than actors and messages.
 
 ```mermaid
 flowchart TD
     A[Read repository AGENTS.md]
 
-    subgraph P0[Phase 0: independent reads]
+    subgraph P0[Phase 0: parallel candidate gathering]
         B[memory_recent agent candidates]
-        C[memory_recent user fallback candidates]
-        P[memory_read_active_collaboration_policy]
+        C[memory_recent user candidates]
+        D[memory_read_active_collaboration_policy]
+        W0{{Wait for phase-0 results}}
+        B --> W0
+        C --> W0
+        D --> W0
     end
 
-    subgraph P1[Phase 1: anchor resolution]
-        D[Resolve reply target and previous-agent anchor]
-        E{Need to save previous final agent?}
-        F[Reuse existing previous-agent anchor]
-        G[memory_remember agent]
-        W1{{Wait for previous-agent anchor}}
+    subgraph P1[Phase 1: build execution plan]
+        E[Resolve reply target and duplicate handling from gathered candidates]
+        F{Need to save previous final agent?}
+        G[Reuse previous-agent anchor]
+        H[memory_remember agent]
+        W1{{Wait for previous-agent anchor state}}
+        E --> F
+        F -- No --> G
+        F -- Yes --> H
+        G --> W1
+        H --> W1
     end
 
-    subgraph P2[Phase 2: user duplicate resolution]
-        I[memory_recent user exact check]
-        J{Fallback duplicate from very-recent actor + content?}
-        W2{{Wait for exact + fallback duplicate checks}}
-        K{Duplicate user save by reply_to + content?}
-        L[Reuse existing user anchor]
-        N[memory_remember user]
+    subgraph P2[Phase 2: conditional user mutation]
+        I{Need to save current user?}
+        J[Reuse existing user anchor]
+        K[memory_remember user]
+        W2{{Wait for current-user state}}
+        I -- No --> J
+        I -- Yes --> K
+        J --> W2
+        K --> W2
     end
 
     A --> B
     A --> C
-    A --> P
-
-    B --> W0{{Wait for phase-0 recent results}}
-    C --> W0
-    W0 --> D
-
-    D --> E
-    E -- No --> F
-    E -- Yes --> G
-    F --> W1
-    G --> W1
-
+    A --> D
+    W0 --> E
     W1 --> I
-    C --> J
-    I --> W2
-    J --> W2
-    W2 --> K
-    K -- Yes --> L
-    K -- No --> N
-
-    L --> W3{{Wait for user save state + ACP}}
-    N --> W3
-    P --> W3
-    W3 --> O{Need more retrieval for this answer?}
-    O -- Yes --> Q[memory_search]
-    O -- No --> R[Continue normal work]
-    Q --> O
-
+    W2 --> L{Need more retrieval for this answer?}
+    L -- Yes --> M[memory_search]
+    L -- No --> N[Continue normal work]
+    M --> L
 ```
 
 Notes:
 
-- This proposal treats `Read repository AGENTS.md` as a repository workflow gate, not as part of the memory protocol RTT phases.
-- Duplicate checks still matter in this sketch; parallelization changes when checks happen, not whether they exist.
-- This proposal does not require `reply_to` to be fully known before the first memory-protocol phase starts.
-- The initial parallel phase is for collecting candidates, not for finalizing threading.
-- The caller resolves anchor threading from recent results before the exact user duplicate check runs.
-- Running ACP in parallel is coherent only if ACP loading is treated as independent from current-user save ordering.
-- This proposal keeps the real data dependencies while matching the observed pattern where callers inspect recent fragments and `anchor_id` values before finalizing saves.
-- The explicit `Wait ...` nodes show the actual dependency barriers: after phase-0 candidate gathering, after previous-agent anchor resolution, after exact user duplicate checking, and before retrieval starts.
+- The design target is to make phase-0 candidate gathering rich enough that phase 1 can decide both threading and duplicate handling without another read in the common case.
+- `memory_recent(agent)` should gather enough signal for previous-agent duplicate detection and anchor-resolution planning.
+- `memory_recent(user)` should gather user-side candidates, not just a single duplicate check result.
+- The wait nodes show the real dependency barriers: after candidate gathering, after previous-agent anchor state, and after current-user state.
 
-## 3. Parked Bundled `memory_begin_turn` Sketch
+## Open Questions
 
-This idea is currently parked. It may be revisited later, but it is not the active design target while caller-side anchor resolution remains uncertain.
-
-Notes:
-
-- The attractive part of this idea is RTT reduction, not clearer semantics.
-- The blocking issue is anchor resolution: observed callers often inspect recent fragments and `anchor_id` values before they know what should be saved.
-- Until that responsibility is made explicit, bundling the whole turn-start mutation path risks baking in the wrong contract.
-- For now, this sketch is retained only as a reminder of a possible later optimization boundary.
-
-## Comparison
-
-| Flow | Sequential RTT phases before optional search | Preserves real dependency constraints | Main tradeoff |
-| --- | --- | --- | --- |
-| Current AGENTS-managed flow | 3 or 5 | Yes | More client round trips |
-| Client-parallel sketch | 2 or 3 | Yes | Requires explicit caller-side anchor resolution from recent results |
-| Parked bundled `memory_begin_turn` sketch | 1 | Unclear today | Anchor-resolution responsibility is not stable enough yet |
-
-## Recommendation
-
-Use the current AGENTS-managed flow as the normative caller contract today.
-
-Use the client-parallel sketch as the active design target. It matches the observed pattern where callers inspect recent fragments and `anchor_id` values before finalizing saves.
-
-Keep the bundled `memory_begin_turn` idea parked until anchor-resolution responsibilities are stable enough to specify cleanly.
+- What is the minimum `memory_recent(user)` payload that still lets phase 1 decide current-user save behavior without an extra read in the common case?
+- What recent-agent fields are sufficient for previous-agent anchor resolution while keeping phase-0 context small?
+- If phase-0 candidates are insufficient, what is the cleanest fallback without losing the main goal of minimizing Codex decision turns?
