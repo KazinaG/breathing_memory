@@ -82,12 +82,16 @@ flowchart TD
     A[Read repository AGENTS.md]
 
     subgraph P1[Phase 1: gather candidates and build execution plan]
+        R1([Re-enter Phase 1])
         B[memory_recent agent candidates]
         C[memory_recent user candidates]
         D[memory_read_active_collaboration_policy]
         W1{{Wait for phase-1 results}}
         E[Resolve reply target and duplicate handling from gathered candidates]
         F{Execution plan stable?}
+        R1 --> B
+        R1 --> C
+        R1 --> D
         B --> W1
         C --> W1
         D --> W1
@@ -108,16 +112,17 @@ flowchart TD
         G -- Yes --> I
         H --> W2
         I --> W2
+        W2 --> J
         J -- No --> K
         J -- Yes --> L
         K --> W3
         L --> W3
     end
 
-    A --> P1
-    F -- No --> P1
-    F -- Yes --> P2
-    P2 --> M{Need more retrieval for this answer?}
+    A --> R1
+    F -- No --> R1
+    F -- Yes --> G
+    W3 --> M{Need more retrieval for this answer?}
     M -- Yes --> N[memory_search]
     M -- No --> O[Continue normal work]
     N --> M
@@ -128,7 +133,7 @@ Notes:
 - The design target is to make phase 1 rich enough that candidate gathering and execution planning usually happen in the same pass.
 - `memory_recent(agent)` should gather enough signal for previous-agent duplicate detection and anchor-resolution planning.
 - `memory_recent(user)` should gather user-side candidates, not just a single duplicate check result.
-- If phase 1 cannot produce a stable execution plan, the flow loops through phase 1 again for more candidate gathering.
+- If phase 1 cannot produce a stable execution plan, the flow loops through the phase-1 re-entry point for more candidate gathering.
 - The wait nodes show the real dependency barriers: after candidate gathering, after previous-agent anchor state, and after current-user state.
 - Current-user mutation waits on `reply_to` stability. When `reply_to` depends on a newly created previous-agent anchor, phase 2 becomes partially serial for that branch.
 
