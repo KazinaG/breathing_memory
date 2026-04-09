@@ -112,6 +112,7 @@ flowchart TD
     end
 
     subgraph P2[Phase 2: conditional mutations]
+        direction TB
         F{Need to save previous final agent?}
         G[Reuse previous-agent anchor]
         H[memory_remember agent]
