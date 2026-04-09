@@ -100,14 +100,11 @@ flowchart TD
     A[Read repository AGENTS.md]
 
     subgraph P1[Phase 1: load turn-start state and build execution plan]
-        P1I([Enter Phase 1])
         B[Call turn_start_state]
         C[Read active collaboration policy]
         W1{{Wait for phase-1 state}}
         D[Build execution plan from dedicated state]
         E{Execution plan ready?}
-        P1I --> B
-        P1I --> C
         B --> W1
         C --> W1
         W1 --> D
@@ -115,7 +112,6 @@ flowchart TD
     end
 
     subgraph P2[Phase 2: conditional mutations]
-        P2I([Enter Phase 2])
         F{Need to save previous final agent?}
         G[Reuse previous-agent anchor]
         H[memory_remember agent]
@@ -124,7 +120,6 @@ flowchart TD
         J[Reuse existing user anchor]
         K[memory_remember user with resolved_reply_to]
         W3{{Wait for current-user state}}
-        P2I --> F
         F -- No --> G
         F -- Yes --> H
         G --> W2
@@ -136,9 +131,10 @@ flowchart TD
         K --> W3
     end
 
-    A --> P1I
+    A --> B
+    A --> C
     E -- No --> B
-    E -- Yes --> P2I
+    E -- Yes --> F
     W3 --> L{Need more retrieval for this answer?}
     L -- Yes --> M[memory_search]
     L -- No --> N[Continue normal work]
