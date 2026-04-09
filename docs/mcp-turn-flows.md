@@ -45,9 +45,9 @@ sequenceDiagram
     Note over Codex: Repository workflow gate<br/>Read repository AGENTS.md
 
     par Phase 1: load turn-start state
-        Codex->>BM: turn_start_state(...)
-    and
         Codex->>BM: memory_read_active_collaboration_policy()
+    and
+        Codex->>BM: turn_start_state(...)
     end
 
     BM-->>Codex: previous_agent_source_user
@@ -100,13 +100,13 @@ flowchart TD
     A[Read repository AGENTS.md]
 
     subgraph P1[Phase 1: load turn-start state and build execution plan]
-        B[Call turn_start_state]
         C[Read active collaboration policy]
+        B[Call turn_start_state]
         W1{{Wait for phase-1 state}}
         D[Build execution plan from dedicated state]
         E{Execution plan ready?}
-        B --> W1
         C --> W1
+        B --> W1
         W1 --> D
         D --> E
     end
@@ -131,11 +131,10 @@ flowchart TD
         K --> W3
     end
 
-    A --> B
-    A --> C
-    E -- No --> B
-    E -- Yes --> F
-    W3 --> L{Need more retrieval for this answer?}
+    A --> P1
+    E -- No --> P1
+    E -- Yes --> P2
+    P2 --> L{Need more retrieval for this answer?}
     L -- Yes --> M[memory_search]
     L -- No --> N[Continue normal work]
     M --> L
