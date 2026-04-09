@@ -24,24 +24,28 @@ sequenceDiagram
 
     Note over Codex: Repository workflow gate<br/>Read repository AGENTS.md
 
-    par Phase 0: candidate gathering
-        Codex->>BM: memory_recent(agent candidates)
-    and
-        Codex->>BM: memory_recent(user candidates)
-    and
-        Codex->>BM: memory_read_active_collaboration_policy()
+    loop Phase 1-2 until execution plan is stable
+        par Phase 1: candidate gathering
+            Codex->>BM: memory_recent(agent candidates)
+        and
+            Codex->>BM: memory_recent(user candidates)
+        and
+            Codex->>BM: memory_read_active_collaboration_policy()
+        end
+
+        BM-->>Codex: recent agent candidates
+        BM-->>Codex: recent user candidates
+        BM-->>Codex: ACP payload
+
+        Note over Codex: Phase 2: build execution plan<br/>resolve anchor threading<br/>decide duplicate handling
     end
 
-    BM-->>Codex: recent agent candidates
-    BM-->>Codex: recent user candidates
-    BM-->>Codex: ACP payload
-
-    Note over Codex: Phase 1: build execution plan<br/>resolve anchor threading<br/>decide duplicate handling
-
     alt previous final agent must be saved
+        Note over Codex: Phase 3: conditional mutations
         Codex->>BM: memory_remember(actor="agent")
         BM-->>Codex: previous-agent anchor
     else reuse previous-agent anchor
+        Note over Codex: Phase 3: conditional mutations
         Note over Codex: Reuse previous-agent anchor
     end
 
@@ -64,9 +68,10 @@ sequenceDiagram
 
 Notes:
 
-- The target common case is `gather -> mutate`, which keeps Codex to two decision turns.
+- The target common case is one pass through phases 1 and 2, followed by phase 3.
 - The branch case becomes `gather -> remember agent -> remember user` when the current user save depends on a newly created previous-agent anchor.
-- ACP is loaded during phase 0 so it is ready before retrieval planning and normal work continue.
+- ACP is loaded during phase 1 so it is ready before retrieval planning and normal work continue.
+- Current-user mutation is blocked only until its `reply_to` target and duplicate decision are stable. It is not inherently non-parallel, but it cannot safely run before those dependencies are resolved.
 
 ### Flowchart View
 
@@ -76,60 +81,65 @@ This view shows the same design as phases and dependency barriers rather than ac
 flowchart TD
     A[Read repository AGENTS.md]
 
-    subgraph P0[Phase 0: parallel candidate gathering]
+    subgraph P1[Phase 1: parallel candidate gathering]
         B[memory_recent agent candidates]
         C[memory_recent user candidates]
         D[memory_read_active_collaboration_policy]
-        W0{{Wait for phase-0 results}}
-        B --> W0
-        C --> W0
-        D --> W0
+        W1{{Wait for phase-1 results}}
+        B --> W1
+        C --> W1
+        D --> W1
     end
 
-    subgraph P1[Phase 1: build execution plan]
+    subgraph P2[Phase 2: build execution plan]
         E[Resolve reply target and duplicate handling from gathered candidates]
-        F{Need to save previous final agent?}
-        G[Reuse previous-agent anchor]
-        H[memory_remember agent]
-        W1{{Wait for previous-agent anchor state}}
+        F{Execution plan stable?}
         E --> F
-        F -- No --> G
-        F -- Yes --> H
-        G --> W1
-        H --> W1
     end
 
-    subgraph P2[Phase 2: conditional user mutation]
-        I{Need to save current user?}
-        J[Reuse existing user anchor]
-        K[memory_remember user]
-        W2{{Wait for current-user state}}
-        I -- No --> J
-        I -- Yes --> K
-        J --> W2
-        K --> W2
+    subgraph P3[Phase 3: conditional mutations]
+        G{Need to save previous final agent?}
+        H[Reuse previous-agent anchor]
+        I[memory_remember agent]
+        W2{{Wait for previous-agent anchor state}}
+        J{Need to save current user?}
+        K[Reuse existing user anchor]
+        L[memory_remember user]
+        W3{{Wait for current-user state}}
+        G -- No --> H
+        G -- Yes --> I
+        H --> W2
+        I --> W2
+        J -- No --> K
+        J -- Yes --> L
+        K --> W3
+        L --> W3
     end
 
     A --> B
     A --> C
     A --> D
-    W0 --> E
-    W1 --> I
-    W2 --> L{Need more retrieval for this answer?}
-    L -- Yes --> M[memory_search]
-    L -- No --> N[Continue normal work]
-    M --> L
+    W1 --> E
+    F -- No --> B
+    F -- Yes --> G
+    W2 --> J
+    W3 --> M{Need more retrieval for this answer?}
+    M -- Yes --> N[memory_search]
+    M -- No --> O[Continue normal work]
+    N --> M
 ```
 
 Notes:
 
-- The design target is to make phase-0 candidate gathering rich enough that phase 1 can decide both threading and duplicate handling without another read in the common case.
+- The design target is to make phase-1 candidate gathering rich enough that phase 2 can decide both threading and duplicate handling without another read in the common case.
 - `memory_recent(agent)` should gather enough signal for previous-agent duplicate detection and anchor-resolution planning.
 - `memory_recent(user)` should gather user-side candidates, not just a single duplicate check result.
+- If phase 2 cannot produce a stable execution plan, the flow loops back to phase 1 for more candidate gathering.
 - The wait nodes show the real dependency barriers: after candidate gathering, after previous-agent anchor state, and after current-user state.
+- Current-user mutation waits on `reply_to` stability. When `reply_to` depends on a newly created previous-agent anchor, phase 3 becomes partially serial for that branch.
 
 ## Open Questions
 
-- What is the minimum `memory_recent(user)` payload that still lets phase 1 decide current-user save behavior without an extra read in the common case?
-- What recent-agent fields are sufficient for previous-agent anchor resolution while keeping phase-0 context small?
-- If phase-0 candidates are insufficient, what is the cleanest fallback without losing the main goal of minimizing Codex decision turns?
+- What is the minimum `memory_recent(user)` payload that still lets phase 2 decide current-user save behavior without an extra read in the common case?
+- What recent-agent fields are sufficient for previous-agent anchor resolution while keeping phase-1 context small?
+- If phase-1 candidates are insufficient, what is the cleanest fallback without losing the main goal of minimizing Codex decision turns?
