@@ -137,7 +137,7 @@ flowchart TD
     end
 
     A --> P1I
-    E -- No --> P1I
+    E -- No --> B
     E -- Yes --> P2I
     W3 --> L{Need more retrieval for this answer?}
     L -- Yes --> M[memory_search]
