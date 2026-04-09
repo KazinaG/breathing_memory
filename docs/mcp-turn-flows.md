@@ -24,8 +24,8 @@ sequenceDiagram
 
     Note over Codex: Repository workflow gate<br/>Read repository AGENTS.md
 
-    loop Phase 1-2 until execution plan is stable
-        par Phase 1: candidate gathering
+    loop Phase 1 until execution plan is stable
+        par Candidate gathering
             Codex->>BM: memory_recent(agent candidates)
         and
             Codex->>BM: memory_recent(user candidates)
@@ -37,15 +37,15 @@ sequenceDiagram
         BM-->>Codex: recent user candidates
         BM-->>Codex: ACP payload
 
-        Note over Codex: Phase 2: build execution plan<br/>resolve anchor threading<br/>decide duplicate handling
+        Note over Codex: Phase 1: build execution plan<br/>resolve anchor threading<br/>decide duplicate handling
     end
 
     alt previous final agent must be saved
-        Note over Codex: Phase 3: conditional mutations
+        Note over Codex: Phase 2: conditional mutations
         Codex->>BM: memory_remember(actor="agent")
         BM-->>Codex: previous-agent anchor
     else reuse previous-agent anchor
-        Note over Codex: Phase 3: conditional mutations
+        Note over Codex: Phase 2: conditional mutations
         Note over Codex: Reuse previous-agent anchor
     end
 
@@ -68,7 +68,7 @@ sequenceDiagram
 
 Notes:
 
-- The target common case is one pass through phases 1 and 2, followed by phase 3.
+- The target common case is one pass through phase 1, followed by phase 2.
 - The branch case becomes `gather -> remember agent -> remember user` when the current user save depends on a newly created previous-agent anchor.
 - ACP is loaded during phase 1 so it is ready before retrieval planning and normal work continue.
 - Current-user mutation is blocked only until its `reply_to` target and duplicate decision are stable. It is not inherently non-parallel, but it cannot safely run before those dependencies are resolved.
@@ -81,23 +81,21 @@ This view shows the same design as phases and dependency barriers rather than ac
 flowchart TD
     A[Read repository AGENTS.md]
 
-    subgraph P1[Phase 1: parallel candidate gathering]
+    subgraph P1[Phase 1: gather candidates and build execution plan]
         B[memory_recent agent candidates]
         C[memory_recent user candidates]
         D[memory_read_active_collaboration_policy]
         W1{{Wait for phase-1 results}}
+        E[Resolve reply target and duplicate handling from gathered candidates]
+        F{Execution plan stable?}
         B --> W1
         C --> W1
         D --> W1
-    end
-
-    subgraph P2[Phase 2: build execution plan]
-        E[Resolve reply target and duplicate handling from gathered candidates]
-        F{Execution plan stable?}
+        W1 --> E
         E --> F
     end
 
-    subgraph P3[Phase 3: conditional mutations]
+    subgraph P2[Phase 2: conditional mutations]
         G{Need to save previous final agent?}
         H[Reuse previous-agent anchor]
         I[memory_remember agent]
@@ -116,14 +114,10 @@ flowchart TD
         L --> W3
     end
 
-    A --> B
-    A --> C
-    A --> D
-    W1 --> E
-    F -- No --> B
-    F -- Yes --> G
-    W2 --> J
-    W3 --> M{Need more retrieval for this answer?}
+    A --> P1
+    F -- No --> P1
+    F -- Yes --> P2
+    P2 --> M{Need more retrieval for this answer?}
     M -- Yes --> N[memory_search]
     M -- No --> O[Continue normal work]
     N --> M
@@ -131,15 +125,15 @@ flowchart TD
 
 Notes:
 
-- The design target is to make phase-1 candidate gathering rich enough that phase 2 can decide both threading and duplicate handling without another read in the common case.
+- The design target is to make phase 1 rich enough that candidate gathering and execution planning usually happen in the same pass.
 - `memory_recent(agent)` should gather enough signal for previous-agent duplicate detection and anchor-resolution planning.
 - `memory_recent(user)` should gather user-side candidates, not just a single duplicate check result.
-- If phase 2 cannot produce a stable execution plan, the flow loops back to phase 1 for more candidate gathering.
+- If phase 1 cannot produce a stable execution plan, the flow loops through phase 1 again for more candidate gathering.
 - The wait nodes show the real dependency barriers: after candidate gathering, after previous-agent anchor state, and after current-user state.
-- Current-user mutation waits on `reply_to` stability. When `reply_to` depends on a newly created previous-agent anchor, phase 3 becomes partially serial for that branch.
+- Current-user mutation waits on `reply_to` stability. When `reply_to` depends on a newly created previous-agent anchor, phase 2 becomes partially serial for that branch.
 
 ## Open Questions
 
-- What is the minimum `memory_recent(user)` payload that still lets phase 2 decide current-user save behavior without an extra read in the common case?
+- What is the minimum `memory_recent(user)` payload that still lets phase 1 decide current-user save behavior without an extra read in the common case?
 - What recent-agent fields are sufficient for previous-agent anchor resolution while keeping phase-1 context small?
-- If phase-1 candidates are insufficient, what is the cleanest fallback without losing the main goal of minimizing Codex decision turns?
+- If phase-1 candidates are insufficient, what is the cleanest fallback loop without losing the main goal of minimizing Codex decision turns?
