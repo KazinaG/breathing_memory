@@ -100,8 +100,8 @@ flowchart TD
     A[Read repository AGENTS.md]
 
     subgraph P1[Phase 1: load turn-start state and build execution plan]
-        C[Read active collaboration policy]
-        B[Call turn_start_state]
+        C[[Read active collaboration policy]]
+        B[[Call turn_start_state]]
         W1{{Wait for phase-1 state}}
         D[Build execution plan from dedicated state]
         E{Execution plan ready?}
@@ -115,11 +115,11 @@ flowchart TD
         direction TB
         F{Need to save previous final agent?}
         G[Reuse previous-agent anchor]
-        H[memory_remember agent]
+        H[[memory_remember agent]]
         W2{{Wait for previous-agent anchor state}}
         I{Need to save current user?}
         J[Reuse existing user anchor]
-        K[memory_remember user with resolved_reply_to]
+        K[[memory_remember user with resolved_reply_to]]
         W3{{Wait for current-user state}}
         F -- No --> G
         F -- Yes --> H
@@ -136,7 +136,7 @@ flowchart TD
     E -- No --> P1
     E -- Yes --> P2
     P2 --> L{Need more retrieval for this answer?}
-    L -- Yes --> M[memory_search]
+    L -- Yes --> M[[memory_search]]
     L -- No --> N[Continue normal work]
     M --> L
 ```
@@ -146,6 +146,7 @@ Notes:
 - The design target is to make phase 1 deterministic enough that retry inside phase 1 is exceptional rather than normal.
 - `turn_start_state(...)` should return exactly the state needed for reply-target safety and duplicate avoidance, not a generic recent-fragment list.
 - `memory_recent(...)` is no longer the active extension point in this design; it stays as a lower-level API.
+- Double-bracket nodes represent MCP calls.
 - The wait nodes show the real dependency barriers: after turn-start state load, after previous-agent anchor state, and after current-user state.
 - Current-user mutation still waits on `resolved_reply_to` stability. When the previous agent must be newly saved, phase 2 remains partially serial for that branch.
 
